@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { AnalysisResults } from "@/components/AnalysisResults";
 import { supabase } from "@/integrations/supabase/client";
 import type { Lead } from "./Scraper";
+import { Navigation } from "@/components/Navigation";
 
 export interface AnalyzedLead extends Lead {
   icp_score: number;
@@ -135,20 +136,23 @@ const Analysis = () => {
   };
 
   return (
-    <div className="container mx-auto py-8 space-y-8">
-      <div>
-        <h1 className="text-4xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-          Análise ICP + Faturamento
-        </h1>
-        <p className="text-muted-foreground mt-2">
-          Qualifique seus leads com inteligência artificial
-        </p>
-      </div>
+    <>
+      <Navigation />
+      <div className="min-h-screen bg-navy py-8">
+        <div className="container mx-auto space-y-8">
+        <div>
+          <h1 className="text-4xl font-bold text-gold">
+            Análise ICP + Faturamento
+          </h1>
+          <p className="text-gold/70 mt-2">
+            Qualifique seus leads com inteligência artificial
+          </p>
+        </div>
 
-      <Card>
+        <Card className="bg-navy-light border-gold/30">
         <CardHeader>
-          <CardTitle>Dados para Análise</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-gold">Dados para Análise</CardTitle>
+          <CardDescription className="text-gold/70">
             Cole o JSON dos leads do scraper para análise completa
           </CardDescription>
         </CardHeader>
@@ -166,7 +170,7 @@ const Analysis = () => {
           </div>
 
           <div className="flex gap-4">
-            <Button onClick={handleAnalyze} disabled={isLoading} className="flex-1">
+            <Button onClick={handleAnalyze} disabled={isLoading} className="flex-1 bg-gold hover:bg-gold-light text-navy font-semibold shadow-gold">
               {isLoading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -181,7 +185,7 @@ const Analysis = () => {
             </Button>
 
             {analyzedLeads.length > 0 && (
-              <Button variant="outline" onClick={downloadCSV}>
+              <Button variant="outline" onClick={downloadCSV} className="border-gold/30 text-gold hover:bg-gold/10">
                 <Download className="mr-2 h-4 w-4" />
                 Baixar Resultados
               </Button>
@@ -190,10 +194,12 @@ const Analysis = () => {
         </CardContent>
       </Card>
 
-      {analyzedLeads.length > 0 && (
-        <AnalysisResults leads={analyzedLeads} />
-      )}
-    </div>
+        {analyzedLeads.length > 0 && (
+          <AnalysisResults leads={analyzedLeads} />
+        )}
+        </div>
+      </div>
+    </>
   );
 };
 
