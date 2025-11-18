@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, Download, Search } from "lucide-react";
 import { LeadsTable } from "@/components/LeadsTable";
 import { supabase } from "@/integrations/supabase/client";
+import { Navigation } from "@/components/Navigation";
 
 export interface Lead {
   source: string;
@@ -98,20 +99,23 @@ const Scraper = () => {
   };
 
   return (
-    <div className="container mx-auto py-8 space-y-8">
-      <div>
-        <h1 className="text-4xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-          Scraper de Leads
-        </h1>
-        <p className="text-muted-foreground mt-2">
-          Extraia leads qualificados do Google Maps e Google Search
-        </p>
-      </div>
+    <>
+      <Navigation />
+      <div className="min-h-screen bg-navy py-8">
+        <div className="container mx-auto space-y-8">
+        <div>
+          <h1 className="text-4xl font-bold text-gold">
+            Scraper de Leads
+          </h1>
+          <p className="text-gold/70 mt-2">
+            Extraia leads qualificados do Google Maps e Google Search
+          </p>
+        </div>
 
-      <Card>
+        <Card className="bg-navy-light border-gold/30">
         <CardHeader>
-          <CardTitle>Parâmetros de Busca</CardTitle>
-          <CardDescription>
+          <CardTitle className="text-gold">Parâmetros de Busca</CardTitle>
+          <CardDescription className="text-gold/70">
             Configure os critérios para encontrar seus leads ideais
           </CardDescription>
         </CardHeader>
@@ -167,7 +171,7 @@ const Scraper = () => {
             </div>
 
             <div className="flex gap-4">
-              <Button type="submit" disabled={isLoading} className="flex-1">
+              <Button type="submit" disabled={isLoading} className="flex-1 bg-gold hover:bg-gold-light text-navy font-semibold shadow-gold">
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -182,7 +186,7 @@ const Scraper = () => {
               </Button>
 
               {leads.length > 0 && (
-                <Button type="button" variant="outline" onClick={downloadCSV}>
+                <Button type="button" variant="outline" onClick={downloadCSV} className="border-gold/30 text-gold hover:bg-gold/10">
                   <Download className="mr-2 h-4 w-4" />
                   Baixar CSV
                 </Button>
@@ -193,10 +197,10 @@ const Scraper = () => {
       </Card>
 
       {leads.length > 0 && (
-        <Card>
+        <Card className="bg-navy-light border-gold/30">
           <CardHeader>
-            <CardTitle>Resultados ({leads.length} leads)</CardTitle>
-            <CardDescription>
+            <CardTitle className="text-gold">Resultados ({leads.length} leads)</CardTitle>
+            <CardDescription className="text-gold/70">
               Leads encontrados e prontos para análise
             </CardDescription>
           </CardHeader>
@@ -205,7 +209,9 @@ const Scraper = () => {
           </CardContent>
         </Card>
       )}
-    </div>
+        </div>
+      </div>
+    </>
   );
 };
 
