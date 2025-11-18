@@ -1,0 +1,7 @@
+project_id = "sitlneuatboibajcczto"
+
+[functions.scrape-leads]
+verify_jwt = false
+
+[functions.analisar-lead]
+verify_jwt = false
