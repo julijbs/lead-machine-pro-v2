@@ -15,9 +15,9 @@ serve(async (req) => {
     const { lead } = await req.json();
     console.log('Analisando lead:', lead.business_name);
 
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-    if (!LOVABLE_API_KEY) {
-      throw new Error('LOVABLE_API_KEY não configurada');
+    const GOOGLE_AI_API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
+    if (!GOOGLE_AI_API_KEY) {
+      throw new Error('GOOGLE_AI_API_KEY não configurada');
     }
 
     const systemPrompt = `Você é um especialista em qualificação de leads B2B para o mercado de clínicas de estética e saúde no Brasil.
@@ -92,45 +92,54 @@ Telefone: ${lead.phone || 'não informado'}
 Descrição: ${lead.raw_description}
 URL Maps: ${lead.maps_url}`;
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+    // Use Google AI Studio API directly
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GOOGLE_AI_API_KEY}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: systemPrompt + '\n\n' + userPrompt }]
+          }
         ],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 1024,
+        },
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Erro na API Lovable AI:', response.status, errorText);
-      
+      console.error('Erro na API Google AI:', response.status, errorText);
+
       if (response.status === 429) {
         return new Response(
           JSON.stringify({ error: 'Limite de taxa excedido. Tente novamente em alguns instantes.' }),
           { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
-      
-      if (response.status === 402) {
+
+      if (response.status === 403) {
         return new Response(
-          JSON.stringify({ error: 'Créditos insuficientes. Adicione créditos na sua workspace Lovable.' }),
-          { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          JSON.stringify({ error: 'API key inválida ou sem permissão.' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
-      throw new Error('Erro ao chamar Lovable AI');
+      throw new Error('Erro ao chamar Google AI');
     }
 
     const data = await response.json();
-    const analysisText = data.choices[0].message.content;
-    
+    const analysisText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!analysisText) {
+      throw new Error('Resposta vazia da API');
+    }
+
     console.log('Resposta da IA:', analysisText);
 
     // Parse o JSON da resposta

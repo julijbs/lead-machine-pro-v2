@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.analisar-lead]
 verify_jwt = false
+
+[functions.analisar-batch]
+verify_jwt = false

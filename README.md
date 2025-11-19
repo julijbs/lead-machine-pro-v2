@@ -1,73 +1,107 @@
-# Welcome to your Lovable project
+# Lead Machine Pro
 
-## Project info
+Plataforma de geração e qualificação de leads com IA para clínicas de estética e saúde.
 
-**URL**: https://lovable.dev/projects/817fefa0-e0dd-443e-880b-ff70bc9c65a0
+**Desenvolvido por JB Digital Consulting**
 
-## How can I edit this code?
+## Funcionalidades
 
-There are several ways of editing your application.
+- **Scraper de Leads**: Busca leads do Google Places API com dados completos
+- **Análise com IA**: Qualificação ICP (N1-N3) e estimativa de faturamento usando Google Gemini
+- **Histórico**: Salva análises anteriores com possibilidade de retomar
+- **Export CSV**: Exporta resultados para planilhas
 
-**Use Lovable**
+## Tech Stack
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/817fefa0-e0dd-443e-880b-ff70bc9c65a0) and start prompting.
+- **Frontend**: React 18 + TypeScript + Vite
+- **UI**: shadcn/ui + Tailwind CSS
+- **Backend**: Supabase (PostgreSQL + Edge Functions)
+- **IA**: Google Gemini 1.5 Flash
+- **Deploy**: Netlify
 
-Changes made via Lovable will be committed automatically to this repo.
+## Instalação Local
 
-**Use your preferred IDE**
+```bash
+# Clone o repositório
+git clone https://github.com/julijbs/lead-machine-pro.git
+cd lead-machine-pro
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+# Instale as dependências
+npm install
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+# Configure as variáveis de ambiente
+cp .env.example .env
+# Edite o .env com suas credenciais
 
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+# Inicie o servidor de desenvolvimento
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Deploy
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Netlify
 
-**Use GitHub Codespaces**
+1. Conecte seu repositório ao Netlify
+2. Configure as variáveis de ambiente:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY`
+3. Deploy automático a cada push
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+### Supabase
 
-## What technologies are used for this project?
+```bash
+# Login
+supabase login
 
-This project is built with:
+# Link ao projeto
+supabase link --project-ref seu_project_id
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+# Aplicar migrações
+supabase db push
 
-## How can I deploy this project?
+# Configurar secrets
+supabase secrets set GOOGLE_AI_API_KEY=sua_chave_aqui
+supabase secrets set GOOGLE_PLACES_API_KEY=sua_chave_aqui
 
-Simply open [Lovable](https://lovable.dev/projects/817fefa0-e0dd-443e-880b-ff70bc9c65a0) and click on Share -> Publish.
+# Deploy das functions
+supabase functions deploy
+```
 
-## Can I connect a custom domain to my Lovable project?
+## Variáveis de Ambiente
 
-Yes, you can!
+### Frontend (.env)
+```
+VITE_SUPABASE_URL=https://xxx.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=eyJ...
+```
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+### Supabase Secrets
+```
+GOOGLE_AI_API_KEY=       # Google AI Studio API Key (obrigatório)
+GOOGLE_PLACES_API_KEY=   # Google Places API Key (opcional - usa mock sem ela)
+```
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## Como obter as API Keys
+
+### Google AI Studio (Gemini)
+1. Acesse https://aistudio.google.com/
+2. Clique em "Get API Key"
+3. Crie ou selecione um projeto
+4. Copie a API Key
+
+### Google Places API
+1. Acesse https://console.cloud.google.com
+2. Crie um projeto
+3. Habilite: Places API, Geocoding API
+4. Crie uma API Key em Credentials
+
+## Testes
+
+```bash
+npm run test        # Watch mode
+npm run test:run    # Single run
+```
+
+## Licença
+
+Proprietário - JB Digital Consulting

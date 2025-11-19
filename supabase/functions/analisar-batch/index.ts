@@ -1,0 +1,355 @@
+import "https://deno.land/x/xhr@0.1.0/mod.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.83.0';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+// Configuration for batch processing
+const BATCH_SIZE = 10; // Process 10 leads at a time
+const MAX_CONCURRENT = 5; // Max concurrent API calls
+const RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 2000;
+
+interface Lead {
+  id?: string;
+  source: string;
+  business_name: string;
+  maps_url: string;
+  website: string;
+  phone: string;
+  address: string;
+  city: string;
+  uf: string;
+  raw_description: string;
+  status_processamento: string;
+}
+
+interface AnalysisResult {
+  icp_score: number;
+  icp_level: string;
+  faturamento_score: number;
+  faturamento_estimado: string;
+  faturamento_nivel: string;
+  brecha: string;
+  script_video: string;
+  texto_direct: string;
+  justificativa: string;
+}
+
+const systemPrompt = `Você é um especialista em qualificação de leads B2B para o mercado de clínicas de estética e saúde no Brasil.
+
+Sua tarefa é analisar cada lead e retornar SOMENTE um JSON válido, sem texto adicional, com esta estrutura exata:
+
+{
+  "icp_score": 0,
+  "icp_level": "descartar",
+  "faturamento_score": 0,
+  "faturamento_estimado": "<100k",
+  "faturamento_nivel": "baixo",
+  "brecha": "string",
+  "script_video": "string",
+  "texto_direct": "string",
+  "justificativa": "string"
+}
+
+REGRAS ICP SCORE (0-3):
+- +1 se tem site profissional
+- +1 se é clínica estruturada (não consultório individual)
+- +1 se há sinais de marketing/tecnologia
+
+ICP LEVELS:
+- 0 = descartar
+- 1 = N3
+- 2 = N2
+- 3 = N1
+
+REGRAS FATURAMENTO SCORE (0-10) - FOCO EM >500k:
+- +2 site premium (design moderno, múltiplas páginas)
+- +2 estrutura física robusta (múltiplos profissionais, consultórios)
+- +2 equipe/secretária (indícios de organização)
+- +1 marketing ativo (blog, redes sociais, ads)
+- +1 serviços premium (laser, harmonização, bioestimuladores)
+- +1 reviews elevadas (muitas avaliações positivas)
+- +1 localização premium (bairros nobres)
+
+CLASSIFICAÇÃO FATURAMENTO:
+- 8-10 pontos → >500k (premium)
+- 6-7 pontos → 300k-500k (alto)
+- 3-5 pontos → 100k-300k (médio)
+- 0-2 pontos → <100k (baixo)
+
+BRECHA:
+Uma única oportunidade concreta relacionada a: eficiência, governança, jornada do paciente, posicionamento, captação ou experiência.
+
+SCRIPT DE VÍDEO:
+- Máximo 12 segundos
+- Linguagem natural, primeira pessoa
+- Tom consultivo, sem pressão
+- Gancho leve e personalizado
+
+TEXTO DIRECT:
+- Curto e humano
+- Zero pressão de venda
+- Menciona a brecha identificada
+- Convite leve para conversa
+
+JUSTIFICATIVA:
+Breve explicação lógica da classificação baseada nos dados analisados.
+
+IMPORTANTE: Retorne APENAS o JSON, sem markdown, sem explicações.`;
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function analyzeSingleLead(
+  lead: Lead,
+  apiKey: string,
+  attempt: number = 1
+): Promise<{ success: boolean; result?: AnalysisResult; error?: string }> {
+  try {
+    const userPrompt = `Analise este lead:
+
+Nome: ${lead.business_name}
+Cidade: ${lead.city} - ${lead.uf}
+Website: ${lead.website || 'não informado'}
+Endereço: ${lead.address}
+Telefone: ${lead.phone || 'não informado'}
+Descrição: ${lead.raw_description}
+URL Maps: ${lead.maps_url}`;
+
+    // Use Google AI Studio API directly
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: systemPrompt + '\n\n' + userPrompt }]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 1024,
+        },
+      }),
+    });
+
+    if (response.status === 429) {
+      // Rate limited - retry with exponential backoff
+      if (attempt < RETRY_ATTEMPTS) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        console.log(`Rate limited on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt})`);
+        await sleep(delay);
+        return analyzeSingleLead(lead, apiKey, attempt + 1);
+      }
+      return { success: false, error: 'Rate limit exceeded after retries' };
+    }
+
+    if (response.status === 403) {
+      return { success: false, error: 'API key inválida ou sem permissão' };
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      if (attempt < RETRY_ATTEMPTS) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        console.log(`API error on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt})`);
+        await sleep(delay);
+        return analyzeSingleLead(lead, apiKey, attempt + 1);
+      }
+      return { success: false, error: `API error: ${response.status} - ${errorText}` };
+    }
+
+    const data = await response.json();
+    const analysisText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!analysisText) {
+      return { success: false, error: 'Resposta vazia da API' };
+    }
+
+    // Parse the JSON response
+    const cleanText = analysisText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const result = JSON.parse(cleanText);
+
+    return { success: true, result };
+  } catch (error) {
+    if (attempt < RETRY_ATTEMPTS) {
+      const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+      console.log(`Error on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt}): ${error}`);
+      await sleep(delay);
+      return analyzeSingleLead(lead, apiKey, attempt + 1);
+    }
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+// Process leads with controlled concurrency
+async function processWithConcurrency<T, R>(
+  items: T[],
+  processor: (item: T) => Promise<R>,
+  concurrency: number
+): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<void>[] = [];
+
+  for (const item of items) {
+    const promise = processor(item).then(result => {
+      results.push(result);
+    });
+    executing.push(promise);
+
+    if (executing.length >= concurrency) {
+      await Promise.race(executing);
+      // Remove completed promises
+      const completed = executing.filter(p => {
+        // Check if promise is settled
+        let settled = false;
+        p.then(() => { settled = true; }).catch(() => { settled = true; });
+        return !settled;
+      });
+      executing.length = 0;
+      executing.push(...completed);
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
+}
+
+serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const { leads, session_id, user_id } = await req.json();
+
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'No leads provided' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const GOOGLE_AI_API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
+    if (!GOOGLE_AI_API_KEY) {
+      throw new Error('GOOGLE_AI_API_KEY não configurada');
+    }
+
+    // Initialize Supabase client for database operations
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    console.log(`Starting batch analysis of ${leads.length} leads with concurrency ${MAX_CONCURRENT}`);
+
+    const results: Array<{
+      lead: Lead;
+      success: boolean;
+      result?: AnalysisResult;
+      error?: string;
+    }> = [];
+
+    // Process leads with controlled concurrency
+    const analysisPromises = leads.map((lead: Lead, index: number) => async () => {
+      console.log(`Processing lead ${index + 1}/${leads.length}: ${lead.business_name}`);
+
+      const analysis = await analyzeSingleLead(lead, GOOGLE_AI_API_KEY);
+
+      // If we have session_id and user_id, save to database
+      if (session_id && user_id) {
+        const leadData = {
+          session_id,
+          user_id,
+          source: lead.source,
+          business_name: lead.business_name,
+          maps_url: lead.maps_url,
+          website: lead.website,
+          phone: lead.phone,
+          address: lead.address,
+          city: lead.city,
+          uf: lead.uf,
+          raw_description: lead.raw_description,
+          status_processamento: lead.status_processamento,
+          analysis_status: analysis.success ? 'completed' : 'error',
+          error_message: analysis.error || null,
+          ...(analysis.result ? {
+            icp_score: analysis.result.icp_score,
+            icp_level: analysis.result.icp_level,
+            faturamento_score: analysis.result.faturamento_score,
+            faturamento_estimado: analysis.result.faturamento_estimado,
+            faturamento_nivel: analysis.result.faturamento_nivel,
+            brecha: analysis.result.brecha,
+            script_video: analysis.result.script_video,
+            texto_direct: analysis.result.texto_direct,
+            justificativa: analysis.result.justificativa,
+            analyzed_at: new Date().toISOString(),
+          } : {})
+        };
+
+        const { error: dbError } = await supabase
+          .from('leads')
+          .insert(leadData);
+
+        if (dbError) {
+          console.error(`Database error for ${lead.business_name}:`, dbError);
+        }
+      }
+
+      return {
+        lead,
+        success: analysis.success,
+        result: analysis.result,
+        error: analysis.error
+      };
+    });
+
+    // Execute with concurrency control
+    const processorFunctions = analysisPromises.map(fn => fn);
+    for (let i = 0; i < processorFunctions.length; i += MAX_CONCURRENT) {
+      const batch = processorFunctions.slice(i, i + MAX_CONCURRENT);
+      const batchResults = await Promise.all(batch.map(fn => fn()));
+      results.push(...batchResults);
+
+      // Small delay between batches to avoid overwhelming the API
+      if (i + MAX_CONCURRENT < processorFunctions.length) {
+        await sleep(500);
+      }
+    }
+
+    const successful = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
+
+    console.log(`Batch analysis complete: ${successful} successful, ${failed} failed`);
+
+    return new Response(
+      JSON.stringify({
+        total: results.length,
+        successful,
+        failed,
+        results: results.map(r => ({
+          business_name: r.lead.business_name,
+          success: r.success,
+          ...(r.success ? r.result : { error: r.error }),
+          // Include original lead data for frontend
+          ...r.lead
+        }))
+      }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+
+  } catch (error) {
+    console.error('Batch analysis error:', error);
+    return new Response(
+      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+});
