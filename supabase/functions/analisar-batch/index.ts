@@ -7,12 +7,14 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// ULTRA SIMPLE CONFIGURATION - NO FANCY FEATURES
-const DELAY_BETWEEN_REQUESTS = 2000; // 2 seconds - VERY slow but reliable
-const MAX_RETRIES = 2; // Only 2 retries
-const RETRY_DELAY = 5000; // 5 seconds between retries
+// Configuration for batch processing
+const BATCH_SIZE = 10; // Process 10 leads at a time
+const MAX_CONCURRENT = 5; // Max concurrent API calls
+const RETRY_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 2000;
 
 interface Lead {
+  id?: string;
   source: string;
   business_name: string;
   maps_url: string;
@@ -25,9 +27,21 @@ interface Lead {
   status_processamento: string;
 }
 
+interface AnalysisResult {
+  icp_score: number;
+  icp_level: string;
+  faturamento_score: number;
+  faturamento_estimado: string;
+  faturamento_nivel: string;
+  brecha: string;
+  script_video: string;
+  texto_direct: string;
+  justificativa: string;
+}
+
 const systemPrompt = `Você é um especialista em qualificação de leads B2B para o mercado de clínicas de estética e saúde no Brasil.
 
-RETORNE APENAS JSON VÁLIDO, SEM TEXTO ADICIONAL:
+Sua tarefa é analisar cada lead e retornar SOMENTE um JSON válido, sem texto adicional, com esta estrutura exata:
 
 {
   "icp_score": 0,
@@ -35,128 +49,199 @@ RETORNE APENAS JSON VÁLIDO, SEM TEXTO ADICIONAL:
   "faturamento_score": 0,
   "faturamento_estimado": "<100k",
   "faturamento_nivel": "baixo",
-  "brecha": "string curta",
-  "script_video": "string curta",
-  "texto_direct": "string curta",
-  "justificativa": "string curta"
+  "brecha": "string",
+  "script_video": "string",
+  "texto_direct": "string",
+  "justificativa": "string"
 }
 
 REGRAS ICP SCORE (0-3):
-+1 se tem site profissional
-+1 se é clínica estruturada
-+1 se há marketing/tecnologia
+- +1 se tem site profissional
+- +1 se é clínica estruturada (não consultório individual)
+- +1 se há sinais de marketing/tecnologia
 
-ICP LEVELS: 0=descartar, 1=N3, 2=N2, 3=N1
+ICP LEVELS:
+- 0 = descartar
+- 1 = N3
+- 2 = N2
+- 3 = N1
 
-FATURAMENTO SCORE (0-10):
-+2 site premium
-+2 estrutura robusta
-+2 equipe
-+1 marketing ativo
-+1 serviços premium
-+1 reviews
-+1 localização premium
+REGRAS FATURAMENTO SCORE (0-10) - FOCO EM >500k:
+- +2 site premium (design moderno, múltiplas páginas)
+- +2 estrutura física robusta (múltiplos profissionais, consultórios)
+- +2 equipe/secretária (indícios de organização)
+- +1 marketing ativo (blog, redes sociais, ads)
+- +1 serviços premium (laser, harmonização, bioestimuladores)
+- +1 reviews elevadas (muitas avaliações positivas)
+- +1 localização premium (bairros nobres)
 
-CLASSIFICAÇÃO: 8-10=>500k+, 6-7=>300-500k, 3-5=>100-300k, 0-2=><100k
+CLASSIFICAÇÃO FATURAMENTO:
+- 8-10 pontos → >500k (premium)
+- 6-7 pontos → 300k-500k (alto)
+- 3-5 pontos → 100k-300k (médio)
+- 0-2 pontos → <100k (baixo)
 
-IMPORTANTE:
-- Retorne APENAS JSON
-- Textos CURTOS (máx 100 caracteres cada)
-- Sem markdown, sem explicações`;
+BRECHA:
+Uma única oportunidade concreta relacionada a: eficiência, governança, jornada do paciente, posicionamento, captação ou experiência.
+
+SCRIPT DE VÍDEO:
+- Máximo 12 segundos
+- Linguagem natural, primeira pessoa
+- Tom consultivo, sem pressão
+- Gancho leve e personalizado
+
+TEXTO DIRECT:
+- Curto e humano
+- Zero pressão de venda
+- Menciona a brecha identificada
+- Convite leve para conversa
+
+JUSTIFICATIVA:
+Breve explicação lógica da classificação baseada nos dados analisados.
+
+IMPORTANTE: Retorne APENAS o JSON, sem markdown, sem explicações.`;
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function analyzeOneLead(
+async function analyzeSingleLead(
   lead: Lead,
   apiKey: string,
   attempt: number = 1
-): Promise<any> {
+): Promise<{ success: boolean; result?: AnalysisResult; error?: string }> {
   try {
-    console.log(`[${attempt}/${MAX_RETRIES + 1}] Analyzing: ${lead.business_name}`);
+    const userPrompt = `Analise este lead:
 
-    const userPrompt = `Lead: ${lead.business_name}, ${lead.city}-${lead.uf}
-Site: ${lead.website || 'não informado'}
-Desc: ${lead.raw_description.substring(0, 200)}`;
+Nome: ${lead.business_name}
+Cidade: ${lead.city} - ${lead.uf}
+Website: ${lead.website || 'não informado'}
+Endereço: ${lead.address}
+Telefone: ${lead.phone || 'não informado'}
+Descrição: ${lead.raw_description}
+URL Maps: ${lead.maps_url}`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
+    // Use Google AI Studio API directly
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
             role: 'user',
             parts: [{ text: systemPrompt + '\n\n' + userPrompt }]
-          }],
-          generationConfig: {
-            temperature: 0.5,
-            maxOutputTokens: 500, // VERY small to avoid MAX_TOKENS
-            topP: 0.8,
+          }
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 2048,
+        },
+        safetySettings: [
+          {
+            category: "HARM_CATEGORY_HARASSMENT",
+            threshold: "BLOCK_NONE"
           },
-          safetySettings: [
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-          ],
-        }),
-      }
-    );
+          {
+            category: "HARM_CATEGORY_HATE_SPEECH",
+            threshold: "BLOCK_NONE"
+          },
+          {
+            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold: "BLOCK_NONE"
+          },
+          {
+            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold: "BLOCK_NONE"
+          }
+        ],
+      }),
+    });
 
-    // Handle errors
     if (response.status === 429) {
-      if (attempt <= MAX_RETRIES) {
-        console.log(`Rate limited, waiting ${RETRY_DELAY}ms...`);
-        await sleep(RETRY_DELAY);
-        return analyzeOneLead(lead, apiKey, attempt + 1);
+      // Rate limited - retry with exponential backoff
+      if (attempt < RETRY_ATTEMPTS) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        console.log(`Rate limited on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt})`);
+        await sleep(delay);
+        return analyzeSingleLead(lead, apiKey, attempt + 1);
       }
-      throw new Error('Rate limit exceeded');
+      return { success: false, error: 'Rate limit exceeded after retries' };
+    }
+
+    if (response.status === 403) {
+      return { success: false, error: 'API key inválida ou sem permissão' };
     }
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`API error ${response.status}:`, errorText);
-      throw new Error(`API error: ${response.status}`);
+      if (attempt < RETRY_ATTEMPTS) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        console.log(`API error on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt})`);
+        await sleep(delay);
+        return analyzeSingleLead(lead, apiKey, attempt + 1);
+      }
+      return { success: false, error: `API error: ${response.status} - ${errorText}` };
     }
 
     const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    console.log(`Resposta da API para ${lead.business_name}:`, JSON.stringify(data).substring(0, 500));
 
-    if (!text) {
-      const reason = data.candidates?.[0]?.finishReason;
-      console.error(`Empty response, reason: ${reason}`);
-      throw new Error(`Empty response: ${reason}`);
+    const analysisText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!analysisText) {
+      console.error(`Resposta vazia para ${lead.business_name}! FinishReason:`, data.candidates?.[0]?.finishReason);
+      return { success: false, error: `Resposta vazia da API. FinishReason: ${data.candidates?.[0]?.finishReason || 'unknown'}` };
     }
 
-    // Parse JSON
-    const cleanText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    // Parse the JSON response
+    const cleanText = analysisText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const result = JSON.parse(cleanText);
 
-    try {
-      const result = JSON.parse(cleanText);
-      console.log(`✓ Success: ${lead.business_name}`);
-      return { success: true, result, lead };
-    } catch {
-      // Try to fix truncated JSON
-      const lastBrace = cleanText.lastIndexOf('}');
-      if (lastBrace > 0) {
-        const fixed = cleanText.substring(0, lastBrace + 1);
-        const result = JSON.parse(fixed);
-        console.log(`✓ Success (fixed): ${lead.business_name}`);
-        return { success: true, result, lead };
-      }
-      throw new Error('Invalid JSON');
-    }
-
+    return { success: true, result };
   } catch (error) {
-    console.error(`✗ Error: ${lead.business_name} -`, error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-      lead
-    };
+    if (attempt < RETRY_ATTEMPTS) {
+      const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+      console.log(`Error on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt}): ${error}`);
+      await sleep(delay);
+      return analyzeSingleLead(lead, apiKey, attempt + 1);
+    }
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
+}
+
+// Process leads with controlled concurrency
+async function processWithConcurrency<T, R>(
+  items: T[],
+  processor: (item: T) => Promise<R>,
+  concurrency: number
+): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<void>[] = [];
+
+  for (const item of items) {
+    const promise = processor(item).then(result => {
+      results.push(result);
+    });
+    executing.push(promise);
+
+    if (executing.length >= concurrency) {
+      await Promise.race(executing);
+      // Remove completed promises
+      const completed = executing.filter(p => {
+        // Check if promise is settled
+        let settled = false;
+        p.then(() => { settled = true; }).catch(() => { settled = true; });
+        return !settled;
+      });
+      executing.length = 0;
+      executing.push(...completed);
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
 }
 
 serve(async (req) => {
@@ -176,35 +261,30 @@ serve(async (req) => {
 
     const GOOGLE_AI_API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
     if (!GOOGLE_AI_API_KEY) {
-      throw new Error('GOOGLE_AI_API_KEY not configured');
+      throw new Error('GOOGLE_AI_API_KEY não configurada');
     }
 
+    // Initialize Supabase client for database operations
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    console.log(`\n🚀 Simple batch analysis: ${leads.length} leads`);
-    console.log(`Delay between requests: ${DELAY_BETWEEN_REQUESTS}ms`);
+    console.log(`Starting batch analysis of ${leads.length} leads with concurrency ${MAX_CONCURRENT}`);
 
-    const results = [];
-    let successful = 0;
-    let failed = 0;
+    const results: Array<{
+      lead: Lead;
+      success: boolean;
+      result?: AnalysisResult;
+      error?: string;
+    }> = [];
 
-    // Process ONE AT A TIME with delay
-    for (let i = 0; i < leads.length; i++) {
-      const lead = leads[i];
+    // Process leads with controlled concurrency
+    const analysisPromises = leads.map((lead: Lead, index: number) => async () => {
+      console.log(`Processing lead ${index + 1}/${leads.length}: ${lead.business_name}`);
 
-      console.log(`\n[${i + 1}/${leads.length}] Processing: ${lead.business_name}`);
+      const analysis = await analyzeSingleLead(lead, GOOGLE_AI_API_KEY);
 
-      const analysis = await analyzeOneLead(lead, GOOGLE_AI_API_KEY);
-
-      if (analysis.success) {
-        successful++;
-      } else {
-        failed++;
-      }
-
-      // Save to database if we have session
+      // If we have session_id and user_id, save to database
       if (session_id && user_id) {
         const leadData = {
           session_id,
@@ -235,42 +315,59 @@ serve(async (req) => {
           } : {})
         };
 
-        await supabase.from('leads').insert(leadData);
+        const { error: dbError } = await supabase
+          .from('leads')
+          .insert(leadData);
+
+        if (dbError) {
+          console.error(`Database error for ${lead.business_name}:`, dbError);
+        }
       }
 
-      results.push({
-        business_name: lead.business_name,
+      return {
+        lead,
         success: analysis.success,
-        ...(analysis.success ? analysis.result : { error: analysis.error }),
-        ...lead
-      });
+        result: analysis.result,
+        error: analysis.error
+      };
+    });
 
-      // Wait before next request (except for last one)
-      if (i < leads.length - 1) {
-        console.log(`Waiting ${DELAY_BETWEEN_REQUESTS}ms before next request...`);
-        await sleep(DELAY_BETWEEN_REQUESTS);
+    // Execute with concurrency control
+    const processorFunctions = analysisPromises.map(fn => fn);
+    for (let i = 0; i < processorFunctions.length; i += MAX_CONCURRENT) {
+      const batch = processorFunctions.slice(i, i + MAX_CONCURRENT);
+      const batchResults = await Promise.all(batch.map(fn => fn()));
+      results.push(...batchResults);
+
+      // Small delay between batches to avoid overwhelming the API
+      if (i + MAX_CONCURRENT < processorFunctions.length) {
+        await sleep(500);
       }
     }
 
-    const successRate = leads.length > 0 ? (successful / leads.length * 100).toFixed(1) : '0.0';
+    const successful = results.filter(r => r.success).length;
+    const failed = results.filter(r => !r.success).length;
 
-    console.log(`\n✅ Complete!`);
-    console.log(`Success: ${successful}, Failed: ${failed}`);
-    console.log(`Success rate: ${successRate}%`);
+    console.log(`Batch analysis complete: ${successful} successful, ${failed} failed`);
 
     return new Response(
       JSON.stringify({
         total: results.length,
         successful,
         failed,
-        success_rate: parseFloat(successRate),
-        results
+        results: results.map(r => ({
+          business_name: r.lead.business_name,
+          success: r.success,
+          ...(r.success ? r.result : { error: r.error }),
+          // Include original lead data for frontend
+          ...r.lead
+        }))
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
-    console.error('Batch error:', error);
+    console.error('Batch analysis error:', error);
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
