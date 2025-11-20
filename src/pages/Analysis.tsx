@@ -13,6 +13,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import type { Lead } from "./Scraper";
 import { Navigation } from "@/components/Navigation";
+import { parseCSV, detectFormat } from "@/utils/csvParser";
 
 export interface AnalyzedLead extends Lead {
   icp_score: number;
@@ -126,19 +127,32 @@ const Analysis = () => {
     if (!leadsInput.trim()) {
       toast({
         title: "Erro",
-        description: "Cole os dados dos leads em formato JSON",
+        description: "Cole os dados dos leads em formato JSON ou CSV",
         variant: "destructive"
       });
       return;
     }
 
     let leads: Lead[];
+    const format = detectFormat(leadsInput);
+
     try {
-      leads = JSON.parse(leadsInput);
-    } catch {
+      if (format === 'json') {
+        leads = JSON.parse(leadsInput);
+      } else if (format === 'csv') {
+        leads = parseCSV(leadsInput) as Lead[];
+      } else {
+        toast({
+          title: "Formato não reconhecido",
+          description: "O arquivo deve estar em formato JSON ou CSV válido.",
+          variant: "destructive"
+        });
+        return;
+      }
+    } catch (error) {
       toast({
-        title: "Erro no JSON",
-        description: "Verifique se o JSON está no formato correto.",
+        title: "Erro ao processar dados",
+        description: error instanceof Error ? error.message : "Verifique se o formato está correto.",
         variant: "destructive"
       });
       return;
@@ -147,7 +161,7 @@ const Analysis = () => {
     if (!Array.isArray(leads) || leads.length === 0) {
       toast({
         title: "Erro",
-        description: "O JSON deve conter um array de leads.",
+        description: "Os dados devem conter pelo menos um lead.",
         variant: "destructive"
       });
       return;
@@ -406,7 +420,7 @@ const Analysis = () => {
             <CardHeader>
               <CardTitle className="text-gold">Dados para Análise</CardTitle>
               <CardDescription className="text-gold/70">
-                Cole o JSON dos leads do scraper para análise completa
+                Cole os dados dos leads em formato JSON ou CSV para análise completa
                 {user && " - Os resultados serão salvos automaticamente"}
               </CardDescription>
             </CardHeader>
@@ -425,10 +439,10 @@ const Analysis = () => {
               )}
 
               <div className="space-y-2">
-                <Label htmlFor="leads-input">JSON dos Leads</Label>
+                <Label htmlFor="leads-input">JSON ou CSV dos Leads</Label>
                 <Textarea
                   id="leads-input"
-                  placeholder='[{"source": "google_maps_rj", "business_name": "Clínica X", ...}]'
+                  placeholder='JSON: [{"source": "google_maps_rj", "business_name": "Clínica X", ...}]&#10;&#10;ou&#10;&#10;CSV: source,business_name,maps_url,...&#10;"google_maps_rj","Clínica X","https://...",...'
                   value={leadsInput}
                   onChange={(e) => setLeadsInput(e.target.value)}
                   rows={10}
