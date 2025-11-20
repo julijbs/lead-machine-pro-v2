@@ -7,20 +7,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Configuration with dynamic rate limiting
+// Configuration with VERY conservative rate limiting to avoid 429 errors
 const CONFIG = {
   MODELS: {
-    PRIMARY: 'gemini-2.0-flash-exp',
-    FALLBACK: 'gemini-1.5-flash',
+    PRIMARY: 'gemini-1.5-flash', // Use stable model, not experimental
+    FALLBACK: 'gemini-1.5-flash', // Same model for consistency
   },
   BATCH_SIZE: 10,
-  BASE_CONCURRENT: 3, // Start conservative, will be adjusted dynamically
-  MAX_CONCURRENT: 8,
-  MIN_CONCURRENT: 2,
-  RETRY_ATTEMPTS: 4,
-  BASE_RETRY_DELAY_MS: 1500,
-  MAX_RETRY_DELAY_MS: 15000,
-  REQUEST_DELAY_MS: 300,
+  BASE_CONCURRENT: 1, // Process ONE at a time initially - VERY conservative
+  MAX_CONCURRENT: 2, // Max 2 concurrent (was 8)
+  MIN_CONCURRENT: 1,
+  RETRY_ATTEMPTS: 5, // More retries with longer delays
+  BASE_RETRY_DELAY_MS: 3000, // 3s base delay (was 1.5s)
+  MAX_RETRY_DELAY_MS: 30000, // 30s max delay (was 15s)
+  REQUEST_DELAY_MS: 1000, // 1s between requests (was 300ms)
+  BATCH_DELAY_MS: 2000, // 2s between batches
   CACHE_EXPIRY_DAYS: 30,
 };
 
@@ -544,9 +545,10 @@ serve(async (req) => {
       // Adjust concurrency for next batch
       stats.currentConcurrency = adjustConcurrency(stats);
 
-      // Small delay between batches
+      // Longer delay between batches to respect rate limits
       if (i + stats.currentConcurrency < leads.length) {
-        await sleep(500);
+        console.log(`⏳ Waiting ${CONFIG.BATCH_DELAY_MS}ms before next batch...`);
+        await sleep(CONFIG.BATCH_DELAY_MS);
       }
     }
 

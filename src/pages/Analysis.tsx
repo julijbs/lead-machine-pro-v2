@@ -27,7 +27,7 @@ export interface AnalyzedLead extends Lead {
   justificativa: string;
 }
 
-const BATCH_SIZE = 50; // Process 50 leads per batch call (v2 function handles this efficiently with cache and dynamic concurrency)
+const BATCH_SIZE = 5; // Process 5 leads per batch call to respect Gemini API rate limits (60 RPM free tier)
 
 const Analysis = () => {
   const { toast } = useToast();
