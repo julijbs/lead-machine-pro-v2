@@ -109,6 +109,24 @@ URL Maps: ${lead.maps_url}`;
           temperature: 0.7,
           maxOutputTokens: 1024,
         },
+        safetySettings: [
+          {
+            category: "HARM_CATEGORY_HARASSMENT",
+            threshold: "BLOCK_NONE"
+          },
+          {
+            category: "HARM_CATEGORY_HATE_SPEECH",
+            threshold: "BLOCK_NONE"
+          },
+          {
+            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold: "BLOCK_NONE"
+          },
+          {
+            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold: "BLOCK_NONE"
+          }
+        ],
       }),
     });
 
@@ -134,10 +152,15 @@ URL Maps: ${lead.maps_url}`;
     }
 
     const data = await response.json();
+    console.log('Resposta completa da API:', JSON.stringify(data));
+
     const analysisText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!analysisText) {
-      throw new Error('Resposta vazia da API');
+      console.error('Resposta vazia! Data:', JSON.stringify(data));
+      console.error('Candidates:', data.candidates);
+      console.error('Finish reason:', data.candidates?.[0]?.finishReason);
+      throw new Error(`Resposta vazia da API. FinishReason: ${data.candidates?.[0]?.finishReason || 'unknown'}`);
     }
 
     console.log('Resposta da IA:', analysisText);
