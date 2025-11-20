@@ -9,9 +9,10 @@ const corsHeaders = {
 
 // Configuration for batch processing
 const BATCH_SIZE = 10; // Process 10 leads at a time
-const MAX_CONCURRENT = 10; // Max concurrent API calls (increased for faster processing)
-const RETRY_ATTEMPTS = 2; // Reduced retries to avoid timeout
-const RETRY_DELAY_MS = 1000; // Reduced delay for faster retries
+const MAX_CONCURRENT = 5; // Max concurrent API calls (reduced to avoid rate limiting)
+const RETRY_ATTEMPTS = 3; // Increased retries for 503 errors
+const RETRY_DELAY_MS = 2000; // Base delay for exponential backoff
+const MAX_RETRY_DELAY_MS = 10000; // Max delay for exponential backoff
 
 interface Lead {
   id?: string;
@@ -136,7 +137,9 @@ URL Maps: ${lead.maps_url}`;
         ],
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096, // Increased to avoid MAX_TOKENS error
+          topP: 0.95,
+          topK: 40,
         },
         safetySettings: [
           {
@@ -159,30 +162,43 @@ URL Maps: ${lead.maps_url}`;
       }),
     });
 
+    // Handle rate limiting (429)
     if (response.status === 429) {
-      // Rate limited - retry with exponential backoff
       if (attempt < RETRY_ATTEMPTS) {
-        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
-        console.log(`Rate limited on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt})`);
+        const delay = Math.min(RETRY_DELAY_MS * Math.pow(2, attempt - 1), MAX_RETRY_DELAY_MS);
+        console.log(`Rate limited on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt}/${RETRY_ATTEMPTS})`);
         await sleep(delay);
         return analyzeSingleLead(lead, apiKey, attempt + 1);
       }
       return { success: false, error: 'Rate limit exceeded after retries' };
     }
 
+    // Handle unauthorized (403)
     if (response.status === 403) {
       return { success: false, error: 'API key inválida ou sem permissão' };
     }
 
+    // Handle server overload (503) and other errors
     if (!response.ok) {
       const errorText = await response.text();
-      if (attempt < RETRY_ATTEMPTS) {
-        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
-        console.log(`API error on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt})`);
+      let errorDetails = errorText;
+
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorDetails = errorJson.error?.message || errorText;
+      } catch {
+        // Keep original error text if not JSON
+      }
+
+      // Retry on 503 (overloaded) and 500 (server error) with exponential backoff
+      if ((response.status === 503 || response.status === 500) && attempt < RETRY_ATTEMPTS) {
+        const delay = Math.min(RETRY_DELAY_MS * Math.pow(2, attempt - 1), MAX_RETRY_DELAY_MS);
+        console.log(`API ${response.status} on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt}/${RETRY_ATTEMPTS})`);
         await sleep(delay);
         return analyzeSingleLead(lead, apiKey, attempt + 1);
       }
-      return { success: false, error: `API error: ${response.status} - ${errorText}` };
+
+      return { success: false, error: `API error: ${response.status} - ${errorDetails}` };
     }
 
     const data = await response.json();
@@ -191,15 +207,61 @@ URL Maps: ${lead.maps_url}`;
     const analysisText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!analysisText) {
-      console.error(`Resposta vazia para ${lead.business_name}! FinishReason:`, data.candidates?.[0]?.finishReason);
-      return { success: false, error: `Resposta vazia da API. FinishReason: ${data.candidates?.[0]?.finishReason || 'unknown'}` };
+      const finishReason = data.candidates?.[0]?.finishReason;
+      console.error(`Resposta vazia para ${lead.business_name}! FinishReason:`, finishReason);
+
+      // If MAX_TOKENS, retry once with increased limit or accept partial result
+      if (finishReason === 'MAX_TOKENS' && attempt < RETRY_ATTEMPTS) {
+        console.log(`MAX_TOKENS on ${lead.business_name}, retrying (attempt ${attempt}/${RETRY_ATTEMPTS})`);
+        await sleep(RETRY_DELAY_MS);
+        return analyzeSingleLead(lead, apiKey, attempt + 1);
+      }
+
+      return { success: false, error: `Resposta vazia da API. FinishReason: ${finishReason || 'unknown'}` };
     }
 
-    // Parse the JSON response
-    const cleanText = analysisText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const result = JSON.parse(cleanText);
+    // Parse the JSON response with better error handling
+    let cleanText = analysisText
+      .replace(/```json\n?/g, '')
+      .replace(/```\n?/g, '')
+      .trim();
 
-    return { success: true, result };
+    // Try to fix common JSON issues
+    try {
+      // First attempt: direct parse
+      const result = JSON.parse(cleanText);
+      return { success: true, result };
+    } catch (parseError) {
+      // Second attempt: fix unterminated strings and try again
+      console.warn(`JSON parse error for ${lead.business_name}, attempting to fix...`);
+
+      try {
+        // Fix unterminated strings by finding the last complete object
+        const lastBraceIndex = cleanText.lastIndexOf('}');
+        if (lastBraceIndex > 0) {
+          cleanText = cleanText.substring(0, lastBraceIndex + 1);
+          const result = JSON.parse(cleanText);
+          console.log(`Successfully fixed JSON for ${lead.business_name}`);
+          return { success: true, result };
+        }
+      } catch (secondError) {
+        // If still fails, log and return error
+        console.error(`Failed to parse JSON for ${lead.business_name}:`, cleanText.substring(0, 500));
+        console.error(`Parse error:`, parseError);
+
+        // Retry if we haven't exhausted attempts
+        if (attempt < RETRY_ATTEMPTS) {
+          console.log(`Retrying ${lead.business_name} due to JSON parse error (attempt ${attempt}/${RETRY_ATTEMPTS})`);
+          await sleep(RETRY_DELAY_MS);
+          return analyzeSingleLead(lead, apiKey, attempt + 1);
+        }
+
+        return {
+          success: false,
+          error: `JSON parse error: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`
+        };
+      }
+    }
   } catch (error) {
     if (attempt < RETRY_ATTEMPTS) {
       const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
@@ -282,6 +344,11 @@ serve(async (req) => {
     // Process leads with controlled concurrency
     const analysisPromises = leads.map((lead: Lead, index: number) => async () => {
       console.log(`Processing lead ${index + 1}/${leads.length}: ${lead.business_name}`);
+
+      // Add small delay between requests to avoid overwhelming the API
+      if (index > 0) {
+        await sleep(200); // 200ms delay between requests
+      }
 
       const analysis = await analyzeSingleLead(lead, GOOGLE_AI_API_KEY);
 

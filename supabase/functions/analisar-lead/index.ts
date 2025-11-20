@@ -107,7 +107,9 @@ URL Maps: ${lead.maps_url}`;
         ],
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096, // Increased to avoid MAX_TOKENS error
+          topP: 0.95,
+          topK: 40,
         },
         safetySettings: [
           {
