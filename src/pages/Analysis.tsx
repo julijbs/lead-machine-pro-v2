@@ -27,7 +27,7 @@ export interface AnalyzedLead extends Lead {
   justificativa: string;
 }
 
-const BATCH_SIZE = 10; // Process 10 leads per batch call (reduced to avoid Edge Function timeout)
+const BATCH_SIZE = 50; // Process 50 leads per batch call (v2 function handles this efficiently with cache and dynamic concurrency)
 
 const Analysis = () => {
   const { toast } = useToast();
@@ -45,6 +45,7 @@ const Analysis = () => {
   const [processedLeads, setProcessedLeads] = useState(0);
   const [successfulLeads, setSuccessfulLeads] = useState(0);
   const [failedLeads, setFailedLeads] = useState(0);
+  const [cachedLeads, setCachedLeads] = useState(0);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   // Load session from URL if provided
@@ -173,6 +174,7 @@ const Analysis = () => {
     setProcessedLeads(0);
     setSuccessfulLeads(0);
     setFailedLeads(0);
+    setCachedLeads(0);
     setAnalyzedLeads([]);
 
     const name = sessionName.trim() || `Análise ${new Date().toLocaleDateString('pt-BR')}`;
@@ -224,20 +226,14 @@ const Analysis = () => {
         const batch = leads.slice(i, i + BATCH_SIZE);
 
         try {
-          // Add timeout to prevent hanging requests (Edge Functions have 150s limit)
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Request timeout')), 140000) // 140s timeout
-          );
-
-          const invokePromise = supabase.functions.invoke('analisar-batch', {
+          // Use optimized v2 function with cache, fallback, and dynamic rate limiting
+          const { data, error } = await supabase.functions.invoke('analisar-v2', {
             body: {
               leads: batch,
               session_id: sessionId,
               user_id: user?.id,
             }
           });
-
-          const { data, error } = await Promise.race([invokePromise, timeoutPromise]) as any;
 
           if (error) {
             const errorMsg = error.message || 'Erro desconhecido';
@@ -267,6 +263,11 @@ const Analysis = () => {
             });
             failed += batch.length;
           } else if (data?.results) {
+            // Update cache stats if provided
+            if (data.cached !== undefined) {
+              setCachedLeads(prev => prev + data.cached);
+            }
+
             // Process results
             data.results.forEach((result: any) => {
               if (result.success !== false) {
@@ -355,9 +356,10 @@ const Analysis = () => {
           .eq('id', sessionId);
       }
 
+      const cacheInfo = cachedLeads > 0 ? ` (${cachedLeads} do cache)` : '';
       toast({
         title: "Análise concluída!",
-        description: `${successful} leads analisados com sucesso, ${failed} com erro.`,
+        description: `${successful} leads analisados com sucesso${cacheInfo}, ${failed} com erro.`,
       });
     } catch (error) {
       console.error('Analysis error:', error);
@@ -475,10 +477,13 @@ const Analysis = () => {
                     <span>{progressPercent.toFixed(1)}%</span>
                   </div>
                   <Progress value={progressPercent} className="h-3" />
-                  <div className="flex gap-4 text-xs">
-                    <span className="text-green-400">Sucesso: {successfulLeads}</span>
-                    <span className="text-red-400">Erros: {failedLeads}</span>
-                    <span className="text-yellow-400">Pendentes: {totalLeads - processedLeads}</span>
+                  <div className="flex gap-4 text-xs flex-wrap">
+                    <span className="text-green-400">✓ Sucesso: {successfulLeads}</span>
+                    <span className="text-red-400">✗ Erros: {failedLeads}</span>
+                    {cachedLeads > 0 && (
+                      <span className="text-blue-400">⚡ Cache: {cachedLeads}</span>
+                    )}
+                    <span className="text-yellow-400">⏳ Pendentes: {totalLeads - processedLeads}</span>
                   </div>
                 </div>
               )}
