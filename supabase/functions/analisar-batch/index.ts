@@ -9,9 +9,9 @@ const corsHeaders = {
 
 // Configuration for batch processing
 const BATCH_SIZE = 10; // Process 10 leads at a time
-const MAX_CONCURRENT = 5; // Max concurrent API calls
-const RETRY_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 2000;
+const MAX_CONCURRENT = 10; // Max concurrent API calls (increased for faster processing)
+const RETRY_ATTEMPTS = 2; // Reduced retries to avoid timeout
+const RETRY_DELAY_MS = 1000; // Reduced delay for faster retries
 
 interface Lead {
   id?: string;
@@ -270,6 +270,7 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     console.log(`Starting batch analysis of ${leads.length} leads with concurrency ${MAX_CONCURRENT}`);
+    console.log(`Configuration: RETRY_ATTEMPTS=${RETRY_ATTEMPTS}, RETRY_DELAY_MS=${RETRY_DELAY_MS}`);
 
     const results: Array<{
       lead: Lead;
@@ -339,16 +340,23 @@ serve(async (req) => {
       const batchResults = await Promise.all(batch.map(fn => fn()));
       results.push(...batchResults);
 
-      // Small delay between batches to avoid overwhelming the API
-      if (i + MAX_CONCURRENT < processorFunctions.length) {
-        await sleep(500);
-      }
+      // Removed delay between batches for faster processing
+      // The MAX_CONCURRENT limit already prevents API overwhelming
     }
 
     const successful = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success).length;
 
     console.log(`Batch analysis complete: ${successful} successful, ${failed} failed`);
+
+    // Log failed leads for debugging
+    if (failed > 0) {
+      const failedLeads = results.filter(r => !r.success);
+      console.error('Failed leads:', failedLeads.map(r => ({
+        name: r.lead.business_name,
+        error: r.error
+      })));
+    }
 
     return new Response(
       JSON.stringify({

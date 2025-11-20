@@ -27,7 +27,7 @@ export interface AnalyzedLead extends Lead {
   justificativa: string;
 }
 
-const BATCH_SIZE = 50; // Process 50 leads per batch call
+const BATCH_SIZE = 10; // Process 10 leads per batch call (reduced to avoid Edge Function timeout)
 
 const Analysis = () => {
   const { toast } = useToast();
@@ -224,7 +224,12 @@ const Analysis = () => {
         const batch = leads.slice(i, i + BATCH_SIZE);
 
         try {
-          const { data, error } = await supabase.functions.invoke('analisar-batch', {
+          // Add timeout to prevent hanging requests (Edge Functions have 150s limit)
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Request timeout')), 140000) // 140s timeout
+          );
+
+          const invokePromise = supabase.functions.invoke('analisar-batch', {
             body: {
               leads: batch,
               session_id: sessionId,
@@ -232,8 +237,19 @@ const Analysis = () => {
             }
           });
 
+          const { data, error } = await Promise.race([invokePromise, timeoutPromise]) as any;
+
           if (error) {
-            console.error('Batch error:', error);
+            const errorMsg = error.message || 'Erro desconhecido';
+            console.error('Batch error:', errorMsg, error);
+
+            // Show toast for batch error
+            toast({
+              title: "Erro no processamento",
+              description: `Erro ao processar lote de ${batch.length} leads: ${errorMsg}`,
+              variant: "destructive"
+            });
+
             // Mark all leads in batch as failed
             batch.forEach(lead => {
               analyzed.push({
@@ -246,7 +262,7 @@ const Analysis = () => {
                 brecha: "Erro na análise",
                 script_video: "",
                 texto_direct: "",
-                justificativa: `Erro: ${error.message}`
+                justificativa: `Erro: ${errorMsg}`
               });
             });
             failed += batch.length;
