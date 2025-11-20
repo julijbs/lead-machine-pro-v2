@@ -226,8 +226,8 @@ const Analysis = () => {
         const batch = leads.slice(i, i + BATCH_SIZE);
 
         try {
-          // Use optimized v2 function with cache, fallback, and dynamic rate limiting
-          const { data, error } = await supabase.functions.invoke('analisar-v2', {
+          // Use optimized function with cache, fallback, and dynamic rate limiting
+          const { data, error } = await supabase.functions.invoke('analisar-batch', {
             body: {
               leads: batch,
               session_id: sessionId,

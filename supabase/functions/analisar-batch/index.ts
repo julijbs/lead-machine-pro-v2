@@ -7,12 +7,22 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Configuration for batch processing
-const BATCH_SIZE = 10; // Process 10 leads at a time
-const MAX_CONCURRENT = 5; // Max concurrent API calls (reduced to avoid rate limiting)
-const RETRY_ATTEMPTS = 3; // Increased retries for 503 errors
-const RETRY_DELAY_MS = 2000; // Base delay for exponential backoff
-const MAX_RETRY_DELAY_MS = 10000; // Max delay for exponential backoff
+// Configuration with dynamic rate limiting
+const CONFIG = {
+  MODELS: {
+    PRIMARY: 'gemini-2.0-flash-exp',
+    FALLBACK: 'gemini-1.5-flash',
+  },
+  BATCH_SIZE: 10,
+  BASE_CONCURRENT: 3, // Start conservative, will be adjusted dynamically
+  MAX_CONCURRENT: 8,
+  MIN_CONCURRENT: 2,
+  RETRY_ATTEMPTS: 4,
+  BASE_RETRY_DELAY_MS: 1500,
+  MAX_RETRY_DELAY_MS: 15000,
+  REQUEST_DELAY_MS: 300,
+  CACHE_EXPIRY_DAYS: 30,
+};
 
 interface Lead {
   id?: string;
@@ -38,6 +48,16 @@ interface AnalysisResult {
   script_video: string;
   texto_direct: string;
   justificativa: string;
+}
+
+interface ProcessingStats {
+  total: number;
+  cached: number;
+  successful: number;
+  failed: number;
+  rateLimitErrors: number;
+  serverErrors: number;
+  currentConcurrency: number;
 }
 
 const systemPrompt = `Você é um especialista em qualificação de leads B2B para o mercado de clínicas de estética e saúde no Brasil.
@@ -106,12 +126,92 @@ async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Generate cache key for a lead
+function generateCacheKey(lead: Lead): string {
+  const normalized = `${lead.business_name.toLowerCase().trim()}|${lead.city?.toLowerCase().trim() || ''}|${lead.uf?.toLowerCase().trim() || ''}|${lead.website?.toLowerCase().trim() || ''}`;
+  return normalized;
+}
+
+// Check cache and return cached result if exists
+async function checkCache(
+  supabase: any,
+  lead: Lead
+): Promise<AnalysisResult | null> {
+  try {
+    const { data, error } = await supabase.rpc('get_cached_analysis', {
+      p_business_name: lead.business_name,
+      p_city: lead.city || '',
+      p_uf: lead.uf || '',
+      p_website: lead.website || '',
+    });
+
+    if (error) {
+      console.error(`Cache lookup error for ${lead.business_name}:`, error);
+      return null;
+    }
+
+    if (data && data.length > 0) {
+      console.log(`✓ Cache HIT for ${lead.business_name}`);
+      return data[0];
+    }
+
+    console.log(`✗ Cache MISS for ${lead.business_name}`);
+    return null;
+  } catch (error) {
+    console.error(`Cache check failed for ${lead.business_name}:`, error);
+    return null;
+  }
+}
+
+// Save analysis result to cache
+async function saveToCache(
+  supabase: any,
+  lead: Lead,
+  result: AnalysisResult
+): Promise<void> {
+  try {
+    await supabase.rpc('save_to_cache', {
+      p_business_name: lead.business_name,
+      p_city: lead.city || '',
+      p_uf: lead.uf || '',
+      p_website: lead.website || '',
+      p_maps_url: lead.maps_url || '',
+      p_icp_score: result.icp_score,
+      p_icp_level: result.icp_level,
+      p_faturamento_score: result.faturamento_score,
+      p_faturamento_estimado: result.faturamento_estimado,
+      p_faturamento_nivel: result.faturamento_nivel,
+      p_brecha: result.brecha,
+      p_script_video: result.script_video,
+      p_texto_direct: result.texto_direct,
+      p_justificativa: result.justificativa,
+    });
+    console.log(`✓ Cached result for ${lead.business_name}`);
+  } catch (error) {
+    console.error(`Failed to cache result for ${lead.business_name}:`, error);
+  }
+}
+
+// Analyze a single lead with model fallback
 async function analyzeSingleLead(
   lead: Lead,
   apiKey: string,
+  supabase: any,
+  usePrimaryModel: boolean = true,
   attempt: number = 1
-): Promise<{ success: boolean; result?: AnalysisResult; error?: string }> {
+): Promise<{ success: boolean; result?: AnalysisResult; error?: string; fromCache?: boolean; modelUsed?: string }> {
   try {
+    // Check cache first
+    const cachedResult = await checkCache(supabase, lead);
+    if (cachedResult) {
+      return {
+        success: true,
+        result: cachedResult,
+        fromCache: true,
+        modelUsed: 'cache',
+      };
+    }
+
     const userPrompt = `Analise este lead:
 
 Nome: ${lead.business_name}
@@ -122,8 +222,10 @@ Telefone: ${lead.phone || 'não informado'}
 Descrição: ${lead.raw_description}
 URL Maps: ${lead.maps_url}`;
 
-    // Use Google AI Studio API directly
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    const model = usePrimaryModel ? CONFIG.MODELS.PRIMARY : CONFIG.MODELS.FALLBACK;
+    console.log(`Analyzing ${lead.business_name} with ${model} (attempt ${attempt}/${CONFIG.RETRY_ATTEMPTS})`);
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -137,173 +239,219 @@ URL Maps: ${lead.maps_url}`;
         ],
         generationConfig: {
           temperature: 0.7,
-          maxOutputTokens: 4096, // Increased to avoid MAX_TOKENS error
+          maxOutputTokens: usePrimaryModel ? 8192 : 4096,
           topP: 0.95,
           topK: 40,
         },
         safetySettings: [
-          {
-            category: "HARM_CATEGORY_HARASSMENT",
-            threshold: "BLOCK_NONE"
-          },
-          {
-            category: "HARM_CATEGORY_HATE_SPEECH",
-            threshold: "BLOCK_NONE"
-          },
-          {
-            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            threshold: "BLOCK_NONE"
-          },
-          {
-            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-            threshold: "BLOCK_NONE"
-          }
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
         ],
       }),
     });
 
     // Handle rate limiting (429)
     if (response.status === 429) {
-      if (attempt < RETRY_ATTEMPTS) {
-        const delay = Math.min(RETRY_DELAY_MS * Math.pow(2, attempt - 1), MAX_RETRY_DELAY_MS);
-        console.log(`Rate limited on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt}/${RETRY_ATTEMPTS})`);
+      if (attempt < CONFIG.RETRY_ATTEMPTS) {
+        const delay = Math.min(
+          CONFIG.BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1),
+          CONFIG.MAX_RETRY_DELAY_MS
+        );
+        console.log(`⚠ Rate limited, retrying in ${delay}ms (${attempt}/${CONFIG.RETRY_ATTEMPTS})`);
         await sleep(delay);
-        return analyzeSingleLead(lead, apiKey, attempt + 1);
+        return analyzeSingleLead(lead, apiKey, supabase, usePrimaryModel, attempt + 1);
       }
-      return { success: false, error: 'Rate limit exceeded after retries' };
+      return { success: false, error: 'Rate limit exceeded after retries', modelUsed: model };
     }
 
     // Handle unauthorized (403)
     if (response.status === 403) {
-      return { success: false, error: 'API key inválida ou sem permissão' };
+      return { success: false, error: 'API key inválida ou sem permissão', modelUsed: model };
     }
 
-    // Handle server overload (503) and other errors
+    // Handle server errors (503, 500)
+    if (response.status === 503 || response.status === 500) {
+      // Try fallback model first if using primary
+      if (usePrimaryModel && attempt === 1) {
+        console.log(`⚠ ${response.status} error, trying fallback model`);
+        await sleep(CONFIG.BASE_RETRY_DELAY_MS);
+        return analyzeSingleLead(lead, apiKey, supabase, false, attempt + 1);
+      }
+
+      // Otherwise retry with exponential backoff
+      if (attempt < CONFIG.RETRY_ATTEMPTS) {
+        const delay = Math.min(
+          CONFIG.BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1),
+          CONFIG.MAX_RETRY_DELAY_MS
+        );
+        console.log(`⚠ ${response.status} error, retrying in ${delay}ms (${attempt}/${CONFIG.RETRY_ATTEMPTS})`);
+        await sleep(delay);
+        return analyzeSingleLead(lead, apiKey, supabase, usePrimaryModel, attempt + 1);
+      }
+
+      return { success: false, error: `Server error ${response.status} after retries`, modelUsed: model };
+    }
+
+    // Handle other errors
     if (!response.ok) {
       const errorText = await response.text();
       let errorDetails = errorText;
-
       try {
         const errorJson = JSON.parse(errorText);
         errorDetails = errorJson.error?.message || errorText;
-      } catch {
-        // Keep original error text if not JSON
-      }
+      } catch { /* keep original */ }
 
-      // Retry on 503 (overloaded) and 500 (server error) with exponential backoff
-      if ((response.status === 503 || response.status === 500) && attempt < RETRY_ATTEMPTS) {
-        const delay = Math.min(RETRY_DELAY_MS * Math.pow(2, attempt - 1), MAX_RETRY_DELAY_MS);
-        console.log(`API ${response.status} on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt}/${RETRY_ATTEMPTS})`);
-        await sleep(delay);
-        return analyzeSingleLead(lead, apiKey, attempt + 1);
-      }
-
-      return { success: false, error: `API error: ${response.status} - ${errorDetails}` };
+      return { success: false, error: `API error: ${response.status} - ${errorDetails}`, modelUsed: model };
     }
 
     const data = await response.json();
-    console.log(`Resposta da API para ${lead.business_name}:`, JSON.stringify(data).substring(0, 500));
-
     const analysisText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!analysisText) {
       const finishReason = data.candidates?.[0]?.finishReason;
-      console.error(`Resposta vazia para ${lead.business_name}! FinishReason:`, finishReason);
 
-      // If MAX_TOKENS, retry once with increased limit or accept partial result
-      if (finishReason === 'MAX_TOKENS' && attempt < RETRY_ATTEMPTS) {
-        console.log(`MAX_TOKENS on ${lead.business_name}, retrying (attempt ${attempt}/${RETRY_ATTEMPTS})`);
-        await sleep(RETRY_DELAY_MS);
-        return analyzeSingleLead(lead, apiKey, attempt + 1);
+      // If MAX_TOKENS with primary model, try fallback
+      if (finishReason === 'MAX_TOKENS' && usePrimaryModel) {
+        console.log(`⚠ MAX_TOKENS with primary model, trying fallback`);
+        await sleep(CONFIG.BASE_RETRY_DELAY_MS);
+        return analyzeSingleLead(lead, apiKey, supabase, false, attempt + 1);
       }
 
-      return { success: false, error: `Resposta vazia da API. FinishReason: ${finishReason || 'unknown'}` };
+      // Otherwise retry
+      if (attempt < CONFIG.RETRY_ATTEMPTS) {
+        await sleep(CONFIG.BASE_RETRY_DELAY_MS);
+        return analyzeSingleLead(lead, apiKey, supabase, usePrimaryModel, attempt + 1);
+      }
+
+      return { success: false, error: `Empty response. FinishReason: ${finishReason || 'unknown'}`, modelUsed: model };
     }
 
-    // Parse the JSON response with better error handling
-    let cleanText = analysisText
-      .replace(/```json\n?/g, '')
-      .replace(/```\n?/g, '')
-      .trim();
+    // Parse JSON with error recovery
+    let cleanText = analysisText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 
-    // Try to fix common JSON issues
     try {
-      // First attempt: direct parse
       const result = JSON.parse(cleanText);
-      return { success: true, result };
-    } catch (parseError) {
-      // Second attempt: fix unterminated strings and try again
-      console.warn(`JSON parse error for ${lead.business_name}, attempting to fix...`);
 
+      // Save to cache
+      await saveToCache(supabase, lead, result);
+
+      return { success: true, result, fromCache: false, modelUsed: model };
+    } catch (parseError) {
+      console.warn(`JSON parse error, attempting recovery...`);
+
+      // Try to fix by finding last valid }
       try {
-        // Fix unterminated strings by finding the last complete object
         const lastBraceIndex = cleanText.lastIndexOf('}');
         if (lastBraceIndex > 0) {
           cleanText = cleanText.substring(0, lastBraceIndex + 1);
           const result = JSON.parse(cleanText);
-          console.log(`Successfully fixed JSON for ${lead.business_name}`);
-          return { success: true, result };
-        }
-      } catch (secondError) {
-        // If still fails, log and return error
-        console.error(`Failed to parse JSON for ${lead.business_name}:`, cleanText.substring(0, 500));
-        console.error(`Parse error:`, parseError);
+          console.log(`✓ JSON recovered successfully`);
 
-        // Retry if we haven't exhausted attempts
-        if (attempt < RETRY_ATTEMPTS) {
-          console.log(`Retrying ${lead.business_name} due to JSON parse error (attempt ${attempt}/${RETRY_ATTEMPTS})`);
-          await sleep(RETRY_DELAY_MS);
-          return analyzeSingleLead(lead, apiKey, attempt + 1);
+          await saveToCache(supabase, lead, result);
+          return { success: true, result, fromCache: false, modelUsed: model };
         }
+      } catch { /* continue to retry */ }
 
-        return {
-          success: false,
-          error: `JSON parse error: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`
-        };
+      // Retry if attempts remain
+      if (attempt < CONFIG.RETRY_ATTEMPTS) {
+        console.log(`Retrying due to JSON parse error (${attempt}/${CONFIG.RETRY_ATTEMPTS})`);
+        await sleep(CONFIG.BASE_RETRY_DELAY_MS);
+        return analyzeSingleLead(lead, apiKey, supabase, usePrimaryModel, attempt + 1);
       }
+
+      return {
+        success: false,
+        error: `JSON parse error: ${parseError instanceof Error ? parseError.message : 'Unknown'}`,
+        modelUsed: model
+      };
     }
   } catch (error) {
-    if (attempt < RETRY_ATTEMPTS) {
-      const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
-      console.log(`Error on ${lead.business_name}, retrying in ${delay}ms (attempt ${attempt}): ${error}`);
+    if (attempt < CONFIG.RETRY_ATTEMPTS) {
+      const delay = CONFIG.BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+      console.log(`Error, retrying in ${delay}ms (${attempt}/${CONFIG.RETRY_ATTEMPTS}): ${error}`);
       await sleep(delay);
-      return analyzeSingleLead(lead, apiKey, attempt + 1);
+      return analyzeSingleLead(lead, apiKey, supabase, usePrimaryModel, attempt + 1);
     }
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
   }
 }
 
-// Process leads with controlled concurrency
-async function processWithConcurrency<T, R>(
-  items: T[],
-  processor: (item: T) => Promise<R>,
-  concurrency: number
-): Promise<R[]> {
-  const results: R[] = [];
-  const executing: Promise<void>[] = [];
+// Save lead to database incrementally
+async function saveLead(
+  supabase: any,
+  sessionId: string,
+  userId: string,
+  lead: Lead,
+  analysis: { success: boolean; result?: AnalysisResult; error?: string; fromCache?: boolean; modelUsed?: string }
+): Promise<void> {
+  try {
+    const leadData = {
+      session_id: sessionId,
+      user_id: userId,
+      source: lead.source,
+      business_name: lead.business_name,
+      maps_url: lead.maps_url,
+      website: lead.website,
+      phone: lead.phone,
+      address: lead.address,
+      city: lead.city,
+      uf: lead.uf,
+      raw_description: lead.raw_description,
+      status_processamento: lead.status_processamento,
+      analysis_status: analysis.success ? 'completed' : 'error',
+      error_message: analysis.error || null,
+      from_cache: analysis.fromCache || false,
+      cache_hit_at: analysis.fromCache ? new Date().toISOString() : null,
+      ...(analysis.result ? {
+        icp_score: analysis.result.icp_score,
+        icp_level: analysis.result.icp_level,
+        faturamento_score: analysis.result.faturamento_score,
+        faturamento_estimado: analysis.result.faturamento_estimado,
+        faturamento_nivel: analysis.result.faturamento_nivel,
+        brecha: analysis.result.brecha,
+        script_video: analysis.result.script_video,
+        texto_direct: analysis.result.texto_direct,
+        justificativa: analysis.result.justificativa,
+        analyzed_at: new Date().toISOString(),
+      } : {})
+    };
 
-  for (const item of items) {
-    const promise = processor(item).then(result => {
-      results.push(result);
-    });
-    executing.push(promise);
+    const { error: dbError } = await supabase
+      .from('leads')
+      .insert(leadData);
 
-    if (executing.length >= concurrency) {
-      await Promise.race(executing);
-      // Remove completed promises
-      const completed = executing.filter(p => {
-        // Check if promise is settled
-        let settled = false;
-        p.then(() => { settled = true; }).catch(() => { settled = true; });
-        return !settled;
-      });
-      executing.length = 0;
-      executing.push(...completed);
+    if (dbError) {
+      console.error(`Database error for ${lead.business_name}:`, dbError);
     }
+  } catch (error) {
+    console.error(`Failed to save lead ${lead.business_name}:`, error);
+  }
+}
+
+// Dynamic concurrency adjustment based on error rate
+function adjustConcurrency(stats: ProcessingStats): number {
+  const errorRate = stats.total > 0 ? (stats.failed / stats.total) : 0;
+  const rateLimitRate = stats.total > 0 ? (stats.rateLimitErrors / stats.total) : 0;
+
+  let newConcurrency = stats.currentConcurrency;
+
+  // If error rate is high, reduce concurrency
+  if (errorRate > 0.3 || rateLimitRate > 0.2) {
+    newConcurrency = Math.max(CONFIG.MIN_CONCURRENT, newConcurrency - 1);
+    console.log(`⬇ Reducing concurrency to ${newConcurrency} (error rate: ${(errorRate * 100).toFixed(1)}%)`);
+  }
+  // If success rate is good, increase concurrency
+  else if (errorRate < 0.1 && rateLimitRate < 0.05 && stats.total > 5) {
+    newConcurrency = Math.min(CONFIG.MAX_CONCURRENT, newConcurrency + 1);
+    console.log(`⬆ Increasing concurrency to ${newConcurrency} (success rate: ${((1 - errorRate) * 100).toFixed(1)}%)`);
   }
 
-  await Promise.all(executing);
-  return results;
+  return newConcurrency;
 }
 
 serve(async (req) => {
@@ -326,123 +474,106 @@ serve(async (req) => {
       throw new Error('GOOGLE_AI_API_KEY não configurada');
     }
 
-    // Initialize Supabase client for database operations
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    console.log(`Starting batch analysis of ${leads.length} leads with concurrency ${MAX_CONCURRENT}`);
-    console.log(`Configuration: RETRY_ATTEMPTS=${RETRY_ATTEMPTS}, RETRY_DELAY_MS=${RETRY_DELAY_MS}`);
+    console.log(`\n🚀 Starting optimized batch analysis of ${leads.length} leads`);
+    console.log(`Configuration: Models: ${CONFIG.MODELS.PRIMARY} -> ${CONFIG.MODELS.FALLBACK}`);
 
-    const results: Array<{
-      lead: Lead;
-      success: boolean;
-      result?: AnalysisResult;
-      error?: string;
-    }> = [];
+    const stats: ProcessingStats = {
+      total: 0,
+      cached: 0,
+      successful: 0,
+      failed: 0,
+      rateLimitErrors: 0,
+      serverErrors: 0,
+      currentConcurrency: CONFIG.BASE_CONCURRENT,
+    };
 
-    // Process leads with controlled concurrency
-    const analysisPromises = leads.map((lead: Lead, index: number) => async () => {
-      console.log(`Processing lead ${index + 1}/${leads.length}: ${lead.business_name}`);
+    const results: Array<any> = [];
 
-      // Add small delay between requests to avoid overwhelming the API
-      if (index > 0) {
-        await sleep(200); // 200ms delay between requests
-      }
+    // Process leads with dynamic concurrency
+    for (let i = 0; i < leads.length; i += stats.currentConcurrency) {
+      const batch = leads.slice(i, Math.min(i + stats.currentConcurrency, leads.length));
+      console.log(`\n📦 Processing batch ${Math.floor(i / stats.currentConcurrency) + 1} (${batch.length} leads, concurrency: ${stats.currentConcurrency})`);
 
-      const analysis = await analyzeSingleLead(lead, GOOGLE_AI_API_KEY);
-
-      // If we have session_id and user_id, save to database
-      if (session_id && user_id) {
-        const leadData = {
-          session_id,
-          user_id,
-          source: lead.source,
-          business_name: lead.business_name,
-          maps_url: lead.maps_url,
-          website: lead.website,
-          phone: lead.phone,
-          address: lead.address,
-          city: lead.city,
-          uf: lead.uf,
-          raw_description: lead.raw_description,
-          status_processamento: lead.status_processamento,
-          analysis_status: analysis.success ? 'completed' : 'error',
-          error_message: analysis.error || null,
-          ...(analysis.result ? {
-            icp_score: analysis.result.icp_score,
-            icp_level: analysis.result.icp_level,
-            faturamento_score: analysis.result.faturamento_score,
-            faturamento_estimado: analysis.result.faturamento_estimado,
-            faturamento_nivel: analysis.result.faturamento_nivel,
-            brecha: analysis.result.brecha,
-            script_video: analysis.result.script_video,
-            texto_direct: analysis.result.texto_direct,
-            justificativa: analysis.result.justificativa,
-            analyzed_at: new Date().toISOString(),
-          } : {})
-        };
-
-        const { error: dbError } = await supabase
-          .from('leads')
-          .insert(leadData);
-
-        if (dbError) {
-          console.error(`Database error for ${lead.business_name}:`, dbError);
+      const batchPromises = batch.map(async (lead: Lead, batchIndex: number) => {
+        // Stagger requests
+        if (batchIndex > 0) {
+          await sleep(CONFIG.REQUEST_DELAY_MS * batchIndex);
         }
-      }
 
-      return {
-        lead,
-        success: analysis.success,
-        result: analysis.result,
-        error: analysis.error
-      };
-    });
+        const analysis = await analyzeSingleLead(lead, GOOGLE_AI_API_KEY, supabase);
 
-    // Execute with concurrency control
-    const processorFunctions = analysisPromises.map(fn => fn);
-    for (let i = 0; i < processorFunctions.length; i += MAX_CONCURRENT) {
-      const batch = processorFunctions.slice(i, i + MAX_CONCURRENT);
-      const batchResults = await Promise.all(batch.map(fn => fn()));
+        // Update stats
+        stats.total++;
+        if (analysis.fromCache) {
+          stats.cached++;
+        }
+        if (analysis.success) {
+          stats.successful++;
+        } else {
+          stats.failed++;
+          if (analysis.error?.includes('Rate limit')) {
+            stats.rateLimitErrors++;
+          }
+          if (analysis.error?.includes('503') || analysis.error?.includes('500')) {
+            stats.serverErrors++;
+          }
+        }
+
+        // Save incrementally to database
+        if (session_id && user_id) {
+          await saveLead(supabase, session_id, user_id, lead, analysis);
+        }
+
+        return {
+          business_name: lead.business_name,
+          success: analysis.success,
+          from_cache: analysis.fromCache,
+          model_used: analysis.modelUsed,
+          ...(analysis.success ? analysis.result : { error: analysis.error }),
+          ...lead
+        };
+      });
+
+      const batchResults = await Promise.all(batchPromises);
       results.push(...batchResults);
 
-      // Removed delay between batches for faster processing
-      // The MAX_CONCURRENT limit already prevents API overwhelming
+      // Adjust concurrency for next batch
+      stats.currentConcurrency = adjustConcurrency(stats);
+
+      // Small delay between batches
+      if (i + stats.currentConcurrency < leads.length) {
+        await sleep(500);
+      }
     }
 
-    const successful = results.filter(r => r.success).length;
-    const failed = results.filter(r => !r.success).length;
+    const cacheHitRate = stats.total > 0 ? (stats.cached / stats.total * 100).toFixed(1) : '0.0';
+    const successRate = stats.total > 0 ? (stats.successful / stats.total * 100).toFixed(1) : '0.0';
 
-    console.log(`Batch analysis complete: ${successful} successful, ${failed} failed`);
-
-    // Log failed leads for debugging
-    if (failed > 0) {
-      const failedLeads = results.filter(r => !r.success);
-      console.error('Failed leads:', failedLeads.map(r => ({
-        name: r.lead.business_name,
-        error: r.error
-      })));
-    }
+    console.log(`\n✅ Batch analysis complete!`);
+    console.log(`📊 Stats: ${stats.successful} successful, ${stats.failed} failed`);
+    console.log(`💾 Cache: ${stats.cached} hits (${cacheHitRate}% hit rate)`);
+    console.log(`📈 Success rate: ${successRate}%`);
+    console.log(`⚠️  Errors: ${stats.rateLimitErrors} rate limit, ${stats.serverErrors} server errors`);
 
     return new Response(
       JSON.stringify({
         total: results.length,
-        successful,
-        failed,
-        results: results.map(r => ({
-          business_name: r.lead.business_name,
-          success: r.success,
-          ...(r.success ? r.result : { error: r.error }),
-          // Include original lead data for frontend
-          ...r.lead
-        }))
+        successful: stats.successful,
+        failed: stats.failed,
+        cached: stats.cached,
+        cache_hit_rate: parseFloat(cacheHitRate),
+        success_rate: parseFloat(successRate),
+        results
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
-    console.error('Batch analysis error:', error);
+    console.error('❌ Batch analysis error:', error);
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
