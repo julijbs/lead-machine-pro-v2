@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Download, Search } from "lucide-react";
+import { Loader2, Download, Search, ArrowRight } from "lucide-react";
 import { LeadsTable } from "@/components/LeadsTable";
 import { supabase } from "@/integrations/supabase/client";
 import { Navigation } from "@/components/Navigation";
@@ -24,6 +25,7 @@ export interface Lead {
 
 const Scraper = () => {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [formData, setFormData] = useState({
@@ -77,7 +79,7 @@ const Scraper = () => {
     }
 
     const headers = "source,business_name,maps_url,website,phone,address,city,uf,raw_description,status_processamento\n";
-    const rows = leads.map(lead => 
+    const rows = leads.map(lead =>
       `"${lead.source}","${lead.business_name}","${lead.maps_url}","${lead.website}","${lead.phone}","${lead.address}","${lead.city}","${lead.uf}","${lead.raw_description}","${lead.status_processamento}"`
     ).join("\n");
 
@@ -95,6 +97,26 @@ const Scraper = () => {
     toast({
       title: "CSV exportado!",
       description: `${leads.length} leads exportados com sucesso.`,
+    });
+  };
+
+  const handleAnalyzeLeads = () => {
+    if (leads.length === 0) {
+      toast({
+        title: "Nenhum lead para analisar",
+        description: "Realize um scraping primeiro.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Convert leads to JSON format and navigate to analysis page
+    const leadsJSON = JSON.stringify(leads, null, 2);
+    navigate('/analysis', { state: { leadsData: leadsJSON } });
+
+    toast({
+      title: "Redirecionando para análise",
+      description: `${leads.length} leads prontos para análise ICP.`,
     });
   };
 
@@ -186,10 +208,21 @@ const Scraper = () => {
               </Button>
 
               {leads.length > 0 && (
-                <Button type="button" variant="outline" onClick={downloadCSV} className="border-gold/30 text-gold hover:bg-gold/10">
-                  <Download className="mr-2 h-4 w-4" />
-                  Baixar CSV
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    onClick={handleAnalyzeLeads}
+                    className="flex-1 bg-gradient-to-r from-gold to-gold-light hover:from-gold-light hover:to-gold text-navy font-semibold shadow-gold"
+                  >
+                    <ArrowRight className="mr-2 h-4 w-4" />
+                    Analisar Leads ({leads.length})
+                  </Button>
+
+                  <Button type="button" variant="outline" onClick={downloadCSV} className="border-gold/30 text-gold hover:bg-gold/10">
+                    <Download className="mr-2 h-4 w-4" />
+                    Baixar CSV
+                  </Button>
+                </>
               )}
             </div>
           </form>

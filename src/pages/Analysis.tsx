@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -33,6 +33,7 @@ const Analysis = () => {
   const { toast } = useToast();
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
 
   const [isLoading, setIsLoading] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -46,6 +47,17 @@ const Analysis = () => {
   const [successfulLeads, setSuccessfulLeads] = useState(0);
   const [failedLeads, setFailedLeads] = useState(0);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+
+  // Load leads from navigation state (Scraper → Analysis)
+  useEffect(() => {
+    if (location.state?.leadsData) {
+      setLeadsInput(location.state.leadsData);
+      toast({
+        title: "Leads carregados!",
+        description: "Dados do scraper foram carregados automaticamente. Clique em 'Iniciar Análise' para começar.",
+      });
+    }
+  }, [location.state]);
 
   // Load session from URL if provided
   useEffect(() => {
