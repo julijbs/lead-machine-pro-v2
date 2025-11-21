@@ -131,7 +131,7 @@ URL Maps: ${lead.maps_url}`;
         'X-Title': 'Lead Machine Pro'
       },
       body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-exp:free', // Free model with good limits
+        model: 'google/gemini-2.5-flash-lite-preview-09-2025', // Paid model - reliable, low cost (~$0.17/1000 leads)
         messages: [
           {
             role: 'system',
