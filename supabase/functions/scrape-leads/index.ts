@@ -126,7 +126,25 @@ serve(async (req) => {
   try {
     const { niche, city, uf, max_results } = await req.json();
 
-    console.log('Iniciando scraping:', { niche, city, uf, max_results });
+    // Auth check and rate limiting
+    const authHeader = req.headers.get('authorization');
+    const isAuthenticated = authHeader && authHeader.startsWith('Bearer ');
+
+    // Limits based on auth status
+    const MAX_LEADS_PER_SCRAPE = isAuthenticated ? 100 : 30; // Guests limited to 30 leads
+
+    if (max_results > MAX_LEADS_PER_SCRAPE) {
+      return new Response(
+        JSON.stringify({
+          error: isAuthenticated
+            ? `Máximo de ${MAX_LEADS_PER_SCRAPE} leads por scraping`
+            : `Usuários não autenticados podem fazer scraping de no máximo ${MAX_LEADS_PER_SCRAPE} leads. Faça login para fazer scraping de até 100 leads.`
+        }),
+        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Scraping request from ${isAuthenticated ? 'authenticated' : 'guest'} user:`, { niche, city, uf, max_results });
 
     const GOOGLE_PLACES_API_KEY = Deno.env.get('GOOGLE_PLACES_API_KEY');
 
