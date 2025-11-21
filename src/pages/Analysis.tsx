@@ -136,10 +136,23 @@ const Analysis = () => {
   };
 
   const handleAnalyze = async () => {
+    // Validation #1: Empty input
     if (!leadsInput.trim()) {
       toast({
         title: "Erro",
         description: "Cole os dados dos leads em formato JSON ou CSV",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Validation #2: File size limit (5MB)
+    const MAX_SIZE_MB = 5;
+    const sizeInMB = new Blob([leadsInput]).size / (1024 * 1024);
+    if (sizeInMB > MAX_SIZE_MB) {
+      toast({
+        title: "Arquivo muito grande",
+        description: `O tamanho máximo permitido é ${MAX_SIZE_MB}MB. Seu arquivo tem ${sizeInMB.toFixed(2)}MB. Reduza a quantidade de leads.`,
         variant: "destructive"
       });
       return;
@@ -170,10 +183,33 @@ const Analysis = () => {
       return;
     }
 
+    // Validation #3: Array and not empty
     if (!Array.isArray(leads) || leads.length === 0) {
       toast({
         title: "Erro",
         description: "Os dados devem conter pelo menos um lead.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Validation #4: Maximum leads limit (500)
+    const MAX_LEADS = 500;
+    if (leads.length > MAX_LEADS) {
+      toast({
+        title: "Limite de leads excedido",
+        description: `Você pode analisar no máximo ${MAX_LEADS} leads por vez. Você tentou analisar ${leads.length} leads. Divida em lotes menores.`,
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Validation #5: Required fields
+    const missingFields = leads.some(lead => !lead.business_name || !lead.city);
+    if (missingFields) {
+      toast({
+        title: "Dados incompletos",
+        description: "Alguns leads não possuem campos obrigatórios (business_name, city). Verifique os dados.",
         variant: "destructive"
       });
       return;
@@ -435,6 +471,15 @@ const Analysis = () => {
                 Cole os dados dos leads em formato JSON ou CSV para análise completa
                 {user && " - Os resultados serão salvos automaticamente"}
               </CardDescription>
+              <div className="mt-4 p-3 bg-navy/50 border border-gold/20 rounded-md">
+                <p className="text-sm text-gold/90 font-medium mb-2">📋 Limites e Requisitos:</p>
+                <ul className="text-xs text-gold/70 space-y-1">
+                  <li>• Máximo: <span className="text-gold font-semibold">500 leads</span> por análise</li>
+                  <li>• Tamanho máximo: <span className="text-gold font-semibold">5MB</span></li>
+                  <li>• Campos obrigatórios: <span className="text-gold font-semibold">business_name</span> e <span className="text-gold font-semibold">city</span></li>
+                  <li>• Formatos aceitos: <span className="text-gold font-semibold">JSON</span> ou <span className="text-gold font-semibold">CSV</span></li>
+                </ul>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               {user && (
