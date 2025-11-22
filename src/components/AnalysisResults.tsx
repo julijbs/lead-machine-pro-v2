@@ -76,9 +76,9 @@ export const AnalysisResults = ({ leads }: AnalysisResultsProps) => {
             {leads.map((lead, index) => (
               <Card key={index} className="bg-navy-light border-l-4" style={{
                 borderLeftColor: lead.icp_level === "N1" ? "hsl(35, 55%, 65%)" :
-                               lead.icp_level === "N2" ? "hsl(35, 65%, 75%)" :
-                               lead.icp_level === "N3" ? "hsl(38, 92%, 50%)" :
-                               "hsl(0, 84.2%, 60.2%)"
+                  lead.icp_level === "N2" ? "hsl(35, 65%, 75%)" :
+                    lead.icp_level === "N3" ? "hsl(38, 92%, 50%)" :
+                      "hsl(0, 84.2%, 60.2%)"
               }}>
                 <CardContent className="pt-6">
                   <div className="space-y-4">
@@ -88,6 +88,24 @@ export const AnalysisResults = ({ leads }: AnalysisResultsProps) => {
                         <p className="text-sm text-gold/70">
                           {lead.city} - {lead.uf} | {lead.phone}
                         </p>
+                        {/* Tech Stack & Pixel Badges */}
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {lead.has_pixel && (
+                            <Badge variant="outline" className="border-green-500 text-green-500 text-xs">
+                              Pixel Detectado
+                            </Badge>
+                          )}
+                          {lead.site_tech && lead.site_tech.map((tech, i) => (
+                            <Badge key={i} variant="secondary" className="text-xs bg-navy border border-gold/20 text-gold/80">
+                              {tech}
+                            </Badge>
+                          ))}
+                          {lead.instagram && (
+                            <Badge variant="outline" className="border-pink-500 text-pink-500 text-xs">
+                              @{lead.instagram}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                       <div className="flex gap-2">
                         <Badge variant={getICPBadgeVariant(lead.icp_level)}>
@@ -128,7 +146,23 @@ export const AnalysisResults = ({ leads }: AnalysisResultsProps) => {
                             <span className="font-medium text-gold">Score Faturamento:</span> {lead.faturamento_score}/10
                           </div>
                         </div>
-                        <div className="text-sm text-gold/80">
+
+                        {/* Sinais Vitais Section */}
+                        {lead.sinais_vitais && (
+                          <div className="grid grid-cols-3 gap-2 mt-2">
+                            <div className={`text-xs p-2 rounded border ${lead.sinais_vitais.tem_login ? 'border-green-500/50 bg-green-500/10 text-green-400' : 'border-gold/10 bg-navy text-gold/50'}`}>
+                              {lead.sinais_vitais.tem_login ? '✅ Tem Login/Portal' : '❌ Sem Login'}
+                            </div>
+                            <div className={`text-xs p-2 rounded border ${lead.sinais_vitais.ticket_medio_alto ? 'border-green-500/50 bg-green-500/10 text-green-400' : 'border-gold/10 bg-navy text-gold/50'}`}>
+                              {lead.sinais_vitais.ticket_medio_alto ? '✅ Ticket Alto' : '❌ Ticket Baixo'}
+                            </div>
+                            <div className={`text-xs p-2 rounded border ${lead.sinais_vitais.custo_fixo_alto ? 'border-green-500/50 bg-green-500/10 text-green-400' : 'border-gold/10 bg-navy text-gold/50'}`}>
+                              {lead.sinais_vitais.custo_fixo_alto ? '✅ Custo Fixo Alto' : '❌ Custo Baixo'}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="text-sm text-gold/80 mt-2">
                           <span className="font-medium text-gold">Justificativa:</span>
                           <p className="mt-1">{lead.justificativa}</p>
                         </div>
@@ -146,8 +180,15 @@ export const AnalysisResults = ({ leads }: AnalysisResultsProps) => {
                         </div>
                       </TabsContent>
 
-                      <TabsContent value="direct">
+                      <TabsContent value="direct" className="space-y-4">
+                        {lead.quebra_gelo && (
+                          <div className="bg-navy-light p-4 rounded-lg border border-gold/20">
+                            <span className="text-xs font-bold text-gold uppercase mb-1 block">Quebra-Gelo Personalizado</span>
+                            <p className="text-sm text-gold/80 italic">"{lead.quebra_gelo}"</p>
+                          </div>
+                        )}
                         <div className="bg-navy-light p-4 rounded-lg border border-gold/20">
+                          <span className="text-xs font-bold text-gold uppercase mb-1 block">Modelo de Direct</span>
                           <p className="text-sm text-gold/80">{lead.texto_direct}</p>
                         </div>
                       </TabsContent>

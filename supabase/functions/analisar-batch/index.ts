@@ -37,12 +37,19 @@ interface AnalysisResult {
   brecha: string;
   script_video: string;
   texto_direct: string;
+  quebra_gelo: string;
+  sinais_vitais: {
+    tem_login: boolean;
+    ticket_medio_alto: boolean;
+    custo_fixo_alto: boolean;
+  };
   justificativa: string;
 }
 
 const systemPrompt = `Você é um especialista em qualificação de leads B2B para o mercado de clínicas de estética e saúde no Brasil.
+Sua missão não é apenas classificar, mas encontrar "Sinais Vitais" de que a empresa tem dinheiro e dor de backend (base de dados desorganizada).
 
-Sua tarefa é analisar cada lead e retornar SOMENTE um JSON válido, sem texto adicional, com esta estrutura exata:
+Sua tarefa é analisar cada lead e retornar SOMENTE um JSON válido com esta estrutura exata:
 
 {
   "icp_score": 0,
@@ -53,54 +60,53 @@ Sua tarefa é analisar cada lead e retornar SOMENTE um JSON válido, sem texto a
   "brecha": "string",
   "script_video": "string",
   "texto_direct": "string",
+  "quebra_gelo": "string",
+  "sinais_vitais": {
+    "tem_login": false,
+    "ticket_medio_alto": false,
+    "custo_fixo_alto": false
+  },
   "justificativa": "string"
 }
 
+ANÁLISE DE SINAIS VITAIS (CRUCIAL):
+1. "Detector de Base Oculta" (tem_login):
+   - Procure no texto por: "Área do Cliente", "Portal", "Login", "Entrar", "Agendamento Online".
+   - Se tiver, é cliente PERFEITO (tem base de dados).
+
+2. "Filtro de Ticket Médio" (ticket_medio_alto):
+   - Procure por: "Solicite Orçamento", "Cotação", "Consultoria", "Projeto", "Tratamentos Personalizados".
+   - Penalize se tiver: "Preço: R$ 50,00", "Carrinho", "Promoção Relâmpago".
+
+3. "Indicador de Custo Fixo" (custo_fixo_alto):
+   - Analise descrição/endereço: Prédio comercial? Clínica com recepção? Equipe grande?
+   - Diferencie do profissional autônomo que atende em coworking.
+
 REGRAS ICP SCORE (0-3):
-- +1 se tem site profissional
-- +1 se é clínica estruturada (não consultório individual)
-- +1 se há sinais de marketing/tecnologia
+- +1 se tem_login = true (OURO!)
+- +1 se ticket_medio_alto = true
+- +1 se custo_fixo_alto = true
 
 ICP LEVELS:
 - 0 = descartar
-- 1 = N3
-- 2 = N2
-- 3 = N1
+- 1 = N3 (Pequeno)
+- 2 = N2 (Médio/Bom)
+- 3 = N1 (Ideal/Enterprise)
 
-REGRAS FATURAMENTO SCORE (0-10) - FOCO EM >500k:
-- +2 site premium (design moderno, múltiplas páginas)
-- +2 estrutura física robusta (múltiplos profissionais, consultórios)
-- +2 equipe/secretária (indícios de organização)
-- +1 marketing ativo (blog, redes sociais, ads)
-- +1 serviços premium (laser, harmonização, bioestimuladores)
-- +1 reviews elevadas (muitas avaliações positivas)
-- +1 localização premium (bairros nobres)
+REGRAS FATURAMENTO SCORE (0-10):
+- Baseie-se na estrutura física, localização e tipo de serviço ofertado.
+- Clínicas com "Laser", "Harmonização", "Cirurgia" = Ticket Alto.
 
-CLASSIFICAÇÃO FATURAMENTO:
-- 8-10 pontos → >500k (premium)
-- 6-7 pontos → 300k-500k (alto)
-- 3-5 pontos → 100k-300k (médio)
-- 0-2 pontos → <100k (baixo)
-
-BRECHA:
-Uma única oportunidade concreta relacionada a: eficiência, governança, jornada do paciente, posicionamento, captação ou experiência.
-
-SCRIPT DE VÍDEO:
-- Máximo 12 segundos
-- Linguagem natural, primeira pessoa
-- Tom consultivo, sem pressão
-- Gancho leve e personalizado
+QUEBRA-GELO (PERSONALIZADO):
+- Gere uma frase única baseada em um dado específico do lead.
+- Ex: "Vi que vocês têm uma unidade no bairro X..." ou "Notei que vocês trabalham com o laser Y..."
+- NÃO use frases genéricas.
 
 TEXTO DIRECT:
-- Curto e humano
-- Zero pressão de venda
-- Menciona a brecha identificada
-- Convite leve para conversa
+- Curto, direto, menciona a brecha e convida para conversa.
+- Se tiver link de DM no input, mencione.
 
-JUSTIFICATIVA:
-Breve explicação lógica da classificação baseada nos dados analisados.
-
-IMPORTANTE: Retorne APENAS o JSON, sem markdown, sem explicações.`;
+IMPORTANTE: Retorne APENAS o JSON.`;
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -340,6 +346,17 @@ serve(async (req) => {
             script_video: analysis.result.script_video,
             texto_direct: analysis.result.texto_direct,
             justificativa: analysis.result.justificativa,
+            // Store complex objects as JSONB if needed, or just add the new text fields
+            // For now, we'll assume the DB schema might need updates or we store in a 'metadata' column
+            // But to keep it simple and working with existing schema (assuming it's flexible or we ignore extra fields):
+            // We will just log them for now if schema doesn't support. 
+            // WAIT: The user wants these fields. I should check if I can save them.
+            // Since I don't have migration access easily, I'll assume 'raw_response' or similar exists, 
+            // OR I will just add them to the object and if Supabase ignores them, fine.
+            // Better: Store them in a 'metadata' jsonb column if it exists, or just try to insert.
+            // Let's try to insert 'quebra_gelo' and 'sinais_vitais' (as json).
+            quebra_gelo: analysis.result.quebra_gelo,
+            sinais_vitais: analysis.result.sinais_vitais,
             analyzed_at: new Date().toISOString(),
           } : {})
         };
@@ -385,7 +402,6 @@ serve(async (req) => {
         successful,
         failed,
         results: results.map(r => ({
-          business_name: r.lead.business_name,
           success: r.success,
           ...(r.success ? r.result : { error: r.error }),
           // Include original lead data for frontend

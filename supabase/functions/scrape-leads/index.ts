@@ -201,6 +201,29 @@ serve(async (req) => {
         description += ` (${place.user_ratings_total} avaliações)`;
       }
 
+      // Technical Verification (Pixel & Tech Stack)
+      // Note: This is a lightweight check. We can't run a full headless browser here.
+      // We will try to fetch the homepage HTML and regex check for common scripts.
+      // This is "best effort" and might fail if the site blocks bots or is SPA.
+      // We won't block the response on this, maybe do it async or just for a few?
+      // Actually, for "scrape-leads", the user expects a list. 
+      // Doing 20 fetches here might timeout the function (10s limit often).
+      // BETTER APPROACH: Just return the URL. The "Analysis" step (analisar-batch) 
+      // is where we should ideally do this deep check, OR we do it here but very fast.
+      // Let's try to do it here but with a short timeout.
+
+      // For now, we will just return the basic data. 
+      // The user asked for "Pixel Checker" and "Tech Stack" columns.
+      // To do this properly without timing out, we should probably do it in the ANALYSIS phase
+      // or as a separate "Enrichment" step.
+      // However, the user asked to add these columns to the results.
+      // Let's add placeholders or try a very fast fetch if we have few results.
+      // Given the constraints, I'll add the logic but wrap it in a safe block.
+
+      // WAIT: The user said "Adicione estas colunas na sua tabela de resultados".
+      // This implies the SCRAPER should return it.
+      // Let's add a helper function to check tech.
+
       return {
         source: `google_places_${uf.toLowerCase()}`,
         business_name: place.name || '',
@@ -211,9 +234,68 @@ serve(async (req) => {
         city: extractedCity,
         uf: extractedUF,
         raw_description: description || niche,
-        status_processamento: ''
+        status_processamento: '',
+        // New fields (initially empty, populated if we can)
+        has_pixel: false,
+        site_tech: [],
+        instagram: '' // Placeholder for future
       };
     });
+
+    // OPTIONAL: Enrich with Tech Data (Parallel Fetch)
+    // Only do this if we have < 10 results to avoid timeout, or do it for all if we trust Deno.
+    // Let's try to enrich the top 5 results just to show it works, or all if fast.
+
+    // Helper to check tech
+    const checkTech = async (url: string): Promise<{ has_pixel: boolean; site_tech: string[]; instagram: string }> => {
+      if (!url) return { has_pixel: false, site_tech: [], instagram: '' };
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+
+        const res = await fetch(url, {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' }
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) return { has_pixel: false, site_tech: [], instagram: '' };
+
+        const html = await res.text();
+        const lowerHtml = html.toLowerCase();
+
+        const hasPixel = lowerHtml.includes('fbevents.js') || lowerHtml.includes('googletagmanager');
+        const techs: string[] = [];
+        if (lowerHtml.includes('wp-content')) techs.push('WordPress');
+        if (lowerHtml.includes('rdstation')) techs.push('RD Station');
+        if (lowerHtml.includes('hubspot')) techs.push('HubSpot');
+        if (lowerHtml.includes('shopify')) techs.push('Shopify');
+        if (lowerHtml.includes('wix')) techs.push('Wix');
+
+        // Simple Instagram extraction
+        const instaMatch = html.match(/instagram\.com\/([a-zA-Z0-9_.]+)/);
+        const instagram = instaMatch ? instaMatch[1] : '';
+
+        return { has_pixel: hasPixel, site_tech: techs, instagram };
+      } catch (e) {
+        return { has_pixel: false, site_tech: [], instagram: '' };
+      }
+    };
+
+    // Enrich leads (limit concurrency)
+    // We'll map over leads and update them.
+    // Note: This might slow down the response.
+    if (leads.length > 0) {
+      console.log('Enriching leads with tech check...');
+      await Promise.all(leads.map(async (lead) => {
+        if (lead.website) {
+          const techData = await checkTech(lead.website);
+          lead.has_pixel = techData.has_pixel;
+          lead.site_tech = techData.site_tech;
+          lead.instagram = techData.instagram;
+        }
+      }));
+    }
 
     console.log(`Scraping concluído: ${leads.length} leads encontrados`);
 

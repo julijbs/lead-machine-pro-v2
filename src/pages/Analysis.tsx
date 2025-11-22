@@ -25,6 +25,16 @@ export interface AnalyzedLead extends Lead {
   script_video: string;
   texto_direct: string;
   justificativa: string;
+  // New fields
+  quebra_gelo?: string;
+  sinais_vitais?: {
+    tem_login: boolean;
+    ticket_medio_alto: boolean;
+    custo_fixo_alto: boolean;
+  };
+  has_pixel?: boolean;
+  site_tech?: string[];
+  instagram?: string;
 }
 
 const BATCH_SIZE = 50; // Process 50 leads per batch call
@@ -128,6 +138,12 @@ const Analysis = () => {
         script_video: lead.script_video || '',
         texto_direct: lead.texto_direct || '',
         justificativa: lead.justificativa || '',
+        // New fields mapping
+        quebra_gelo: lead.quebra_gelo || '',
+        sinais_vitais: lead.sinais_vitais || { tem_login: false, ticket_medio_alto: false, custo_fixo_alto: false },
+        has_pixel: lead.has_pixel || false,
+        site_tech: lead.site_tech || [],
+        instagram: lead.instagram || '',
       }));
       setAnalyzedLeads(formattedLeads);
     }
@@ -322,6 +338,12 @@ const Analysis = () => {
                   script_video: result.script_video || '',
                   texto_direct: result.texto_direct || '',
                   justificativa: result.justificativa || '',
+                  // New fields mapping
+                  quebra_gelo: result.quebra_gelo || '',
+                  sinais_vitais: result.sinais_vitais || { tem_login: false, ticket_medio_alto: false, custo_fixo_alto: false },
+                  has_pixel: result.has_pixel || false,
+                  site_tech: result.site_tech || [],
+                  instagram: result.instagram || '',
                 });
                 successful++;
               } else {
@@ -426,9 +448,9 @@ const Analysis = () => {
       return;
     }
 
-    const headers = "source,business_name,maps_url,website,phone,address,city,uf,raw_description,status_processamento,icp_score,icp_level,faturamento_score,faturamento_estimado,faturamento_nivel,brecha,script_video,texto_direct,justificativa\n";
+    const headers = "source,business_name,maps_url,website,phone,address,city,uf,raw_description,status_processamento,icp_score,icp_level,faturamento_score,faturamento_estimado,faturamento_nivel,brecha,script_video,texto_direct,quebra_gelo,has_pixel,site_tech,instagram,justificativa\n";
     const rows = analyzedLeads.map(lead =>
-      `"${lead.source}","${lead.business_name}","${lead.maps_url}","${lead.website}","${lead.phone}","${lead.address}","${lead.city}","${lead.uf}","${(lead.raw_description || '').replace(/"/g, '""')}","${lead.status_processamento}","${lead.icp_score}","${lead.icp_level}","${lead.faturamento_score}","${lead.faturamento_estimado}","${lead.faturamento_nivel}","${(lead.brecha || '').replace(/"/g, '""')}","${(lead.script_video || '').replace(/"/g, '""')}","${(lead.texto_direct || '').replace(/"/g, '""')}","${(lead.justificativa || '').replace(/"/g, '""')}"`
+      `"${lead.source}","${lead.business_name}","${lead.maps_url}","${lead.website}","${lead.phone}","${lead.address}","${lead.city}","${lead.uf}","${(lead.raw_description || '').replace(/"/g, '""')}","${lead.status_processamento}","${lead.icp_score}","${lead.icp_level}","${lead.faturamento_score}","${lead.faturamento_estimado}","${lead.faturamento_nivel}","${(lead.brecha || '').replace(/"/g, '""')}","${(lead.script_video || '').replace(/"/g, '""')}","${(lead.texto_direct || '').replace(/"/g, '""')}","${(lead.quebra_gelo || '').replace(/"/g, '""')}","${lead.has_pixel ? 'Sim' : 'Não'}","${(lead.site_tech || []).join(', ')}","${lead.instagram || ''}","${(lead.justificativa || '').replace(/"/g, '""')}"`
     ).join("\n");
 
     const csv = headers + rows;
